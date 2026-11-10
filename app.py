@@ -3,6 +3,7 @@ import csv
 import io
 import logging
 import os
+import re
 import secrets
 import time
 from datetime import date, datetime, timedelta
@@ -19,7 +20,13 @@ from werkzeug.security import check_password_hash, generate_password_hash
 from buses_iniciales import BUSES
 
 TZ = ZoneInfo(os.environ.get("ZONA_HORARIA", "America/Santiago"))
-DATABASE_URL = os.environ.get("DATABASE_URL", "postgresql://localhost/flota")
+def _limpiar_url(v):
+    """Acepta también el snippet de Neon (psql 'postgresql://...') o la URL con comillas o espacios."""
+    m = re.search(r"postgres(?:ql)?://[^\s'\"]+", v or "")
+    return m.group(0) if m else (v or "").strip()
+
+
+DATABASE_URL = _limpiar_url(os.environ.get("DATABASE_URL", "postgresql://localhost/flota"))
 ADMIN_USUARIO = os.environ.get("ADMIN_USUARIO", "admin")
 ADMIN_CLAVE = os.environ.get("ADMIN_CLAVE", "")
 
