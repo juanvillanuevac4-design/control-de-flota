@@ -108,7 +108,30 @@ async function cargar() {
   $("h-tipo").innerHTML = '<option value="">Todos</option>' + tipos.map(t => `<option>${esc(t)}</option>`).join("");
   pintar();
 }
+// Etiquetas de datos: el valor dentro de cada segmento y el total al final de la barra apilada.
+const etiquetas = {id: "etiquetas", afterDatasetsDraw(ch) {
+  const {ctx} = ch, horiz = ch.options.indexAxis === "y", tot = [];
+  ctx.save(); ctx.font = "700 12px " + css("--f-mono"); ctx.textAlign = "center"; ctx.textBaseline = "middle";
+  ch.data.datasets.forEach((ds, di) => {
+    const meta = ch.getDatasetMeta(di); if (meta.hidden) return;
+    meta.data.forEach((el, i) => {
+      const v = ds.data[i]; tot[i] = (tot[i] || 0) + (v || 0);
+      if (!v) return;
+      const largo = horiz ? Math.abs(el.x - el.base) : Math.abs(el.base - el.y);
+      if (largo < 16) return;
+      const p = el.tooltipPosition(); ctx.fillStyle = "#fff";
+      ctx.fillText(v, horiz ? (el.x + el.base) / 2 : p.x, horiz ? p.y : (el.y + el.base) / 2);
+    });
+  });
+  const ult = ch.getDatasetMeta(ch.data.datasets.length - 1);
+  ctx.fillStyle = css("--fg");
+  ult.data.forEach((el, i) => { if (!tot[i]) return;
+    if (horiz) { ctx.textAlign = "left"; ctx.fillText("Total " + tot[i], el.x + 6, el.y); }
+    else { ctx.fillText(tot[i], el.x, el.y - 9); } });
+  ctx.restore();
+}};
 function grafico(id, cfg) {
+  if (cfg.type === "bar") { cfg.plugins = [etiquetas]; cfg.options.layout ||= {padding: {top: 18}}; }
   graficos[id]?.destroy();
   Chart.defaults.font.family = css("--f-display"); Chart.defaults.color = css("--muted"); Chart.defaults.borderColor = css("--line");
   graficos[id] = new Chart($(id), cfg);
@@ -138,7 +161,7 @@ function v1() {
   grafico("c-term", {type: "bar", data: {labels: T, datasets: [
       {label: "Operativo", data: T.map(t => fs.filter(f => f[5] === t && f[6] === "Operativo").length), backgroundColor: css("--ok")},
       {label: "Mantenimiento", data: T.map(t => fs.filter(f => f[5] === t && f[6] === "Mantenimiento").length), backgroundColor: css("--mt")}]},
-    options: {indexAxis: "y", maintainAspectRatio: false, scales: {x: {stacked: true, ticks: {precision: 0}}, y: {stacked: true}}, plugins: {legend: {position: "bottom"}}}});
+    options: {indexAxis: "y", maintainAspectRatio: false, layout: {padding: {right: 70}}, scales: {x: {stacked: true, ticks: {precision: 0}}, y: {stacked: true}}, plugins: {legend: {position: "bottom"}}}});
   const tipos = [...new Set(fs.map(f => f[3]))].sort();
   $("t-tipo").innerHTML = `<table><thead><tr><th>Tipo bus</th><th>Operativos</th><th>Mantenimiento</th><th>Total</th><th>Disponibilidad</th></tr></thead><tbody>` +
     tipos.map(t => { const g = fs.filter(f => f[3] === t), o = g.filter(f => f[6] === "Operativo").length;

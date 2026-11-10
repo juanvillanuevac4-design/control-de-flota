@@ -111,7 +111,7 @@ const DESC = {
   B: "Propuesta B: una tarjeta por bus con botón grande Operativo / Mantenimiento. Pensada para celular en el patio.",
   C: "Propuesta C: buses agrupados por Terminal Real. Toca un bus para moverlo o cambiar su estado; se ve la distribución de un vistazo.",
 };
-let yo, datos, filas = [], original = {}, vista = leerPref("flota_vista", "A");
+let yo, datos, filas = [], original = {}, vista = leerPref("flota_vista", "C");
 const $ = id => document.getElementById(id);
 const llave = f => f.terminal_real + "|" + f.operativo + "|" + (f.observacion || "");
 const opts = (lista, v) => lista.map(o => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("");
