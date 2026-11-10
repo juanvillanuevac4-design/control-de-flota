@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Dashboard · Control de Flota</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/base.css">
+<script src="/static/chart.umd.min.js"></script>
+<style>
+h1{font-size:1.45rem;font-weight:800}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,420px),1fr));gap:12px}
+.card h2{font-size:1rem;margin-bottom:8px}
+.chart{position:relative;height:280px}
+.delta{font:600 .8rem var(--f-mono)}
+.up{color:var(--ok)} .down{color:var(--mt)}
+.heat{border-collapse:separate;border-spacing:2px;width:auto}
+.heat th,.heat td{padding:0;border:0;font:500 .7rem var(--f-mono);text-align:center}
+.heat th{position:static;background:none;color:var(--muted);text-transform:none;letter-spacing:0;padding:0 2px;writing-mode:vertical-rl;transform:rotate(180deg);height:46px}
+.heat th.b{writing-mode:horizontal-tb;transform:none;text-align:right;height:auto;padding-right:6px;position:sticky;left:0;background:var(--surface);z-index:1}
+.heat td.c{width:22px;height:20px;border-radius:4px;font-weight:700}
+.heat td.o{background:var(--ok-bg);color:var(--ok)} .heat td.m{background:var(--mt);color:#fff} .heat td.n{background:var(--surface2)}
+.heat td.d{font-weight:700;padding-left:6px;text-align:left}
+.down-row{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end;justify-content:space-between}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Dashboard y descarga</h1>
+
+  <section class="card pad down-row">
+    <div class="row">
+      <label class="f">Desde<input type="date" id="desde"></label>
+      <label class="f">Hasta<input type="date" id="hasta"></label>
+      <button class="btn sec" id="aplicar">Actualizar</button>
+    </div>
+    <div class="row">
+      <a class="btn" id="d-xlsx" href="#">Descargar Excel</a>
+      <a class="btn sec" id="d-csv" href="#">Descargar CSV</a>
+    </div>
+  </section>
+
+  <section class="card pad" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between">
+    <div class="tabs" role="tablist" aria-label="Propuesta de dashboard">
+      <button role="tab" data-v="1">1 · Foto del día</button>
+      <button role="tab" data-v="2">2 · Tendencia</button>
+      <button role="tab" data-v="3">3 · Historial por bus</button>
+    </div>
+    <p class="note" id="desc" style="flex:1 1 300px"></p>
+  </section>
+  <div id="vacio" class="msg warn" hidden>No hay reportes en el rango elegido.</div>
+
+  <!-- 1 · Foto del día -->
+  <div id="v1" hidden style="display:flex;flex-direction:column;gap:12px">
+    <div class="row"><label class="f">Día<select id="dia"></select></label></div>
+    <div class="kpis" id="k1"></div>
+    <div class="grid2">
+      <section class="card pad"><h2>Buses por Terminal Real</h2><div class="chart"><canvas id="c-term"></canvas></div></section>
+      <section class="card pad"><h2>Por tipo de bus</h2><div class="scroll" id="t-tipo"></div></section>
+    </div>
+    <section class="card pad"><h2>Buses en mantenimiento</h2><div class="scroll" id="t-mant"></div></section>
+  </div>
+
+  <!-- 2 · Tendencia -->
+  <div id="v2" hidden style="display:flex;flex-direction:column;gap:12px">
+    <div class="kpis" id="k2"></div>
+    <section class="card pad"><h2>Disponibilidad diaria (% operativos)</h2><div class="chart"><canvas id="c-disp"></canvas></div></section>
+    <section class="card pad"><h2>Buses por Terminal Real cada día</h2><div class="chart"><canvas id="c-dist"></canvas></div></section>
+  </div>
+
+  <!-- 3 · Historial por bus -->
+  <div id="v3" hidden style="display:flex;flex-direction:column;gap:12px">
+    <div class="kpis" id="k3"></div>
+    <section class="card pad"><h2>Estado de cada bus por día</h2>
+      <p class="note" style="margin-bottom:8px">Verde: operativo · rojo: mantenimiento · gris: sin dato. La letra es la Terminal Real (P Pie Andino, A Aguirre Luco, J Juanita, O Otro). Ordenado por días en mantenimiento.</p>
+      <div class="row" style="margin-bottom:8px"><label class="f">Tipo de bus<select id="h-tipo"><option value="">Todos</option></select></label>
+        <label class="f">Mostrar<select id="h-sol"><option value="">Todos los buses</option><option value="m">Solo con días en mantenimiento</option></select></label></div>
+      <div class="scroll" id="heat"></div></section>
+  </div>
+</div>
+<script src="/static/comun.js"></script>
+<script>
+const DESC = {
+  1: "Propuesta 1: la situación del día elegido. Indicadores, distribución por terminal y lista de buses en mantenimiento.",
+  2: "Propuesta 2: evolución en el rango elegido. Sirve para ver si la disponibilidad sube o baja y cómo se mueve la flota entre terminales.",
+  3: "Propuesta 3: historial bus por bus. Muestra qué buses llevan más días detenidos y dónde estuvieron.",
+};
+const $ = id => document.getElementById(id);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const LETRA = {"Pie Andino": "P", "Aguirre Luco": "A", "Juanita": "J", "Otro": "O"};
+let D, vista = leerPref("flota_dash", "1"), graficos = {};
+const hoyISO = () => new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+
+function enlaces() {
+  const q = `?desde=${$("desde").value}&hasta=${$("hasta").value}`;
+  $("d-xlsx").href = "/api/descarga.xlsx" + q; $("d-csv").href = "/api/descarga.csv" + q;
+}
+async function cargar() {
+  enlaces();
+  D = await api(`/api/dashboard?desde=${$("desde").value}&hasta=${$("hasta").value}`);
+  // fila: [fecha, interno, placa, tipo, marca, terminal, estado, obs]
+  D.fechas = [...new Set(D.filas.map(f => f[0]))].sort();
+  D.porFecha = {};
+  D.filas.forEach(f => (D.porFecha[f[0]] ||= []).push(f));
+  $("dia").innerHTML = D.fechas.slice().reverse().map(f => `<option value="${f}">${diaSemana(f)} ${fmtFecha(f)}</option>`).join("");
+  const tipos = [...new Set(D.filas.map(f => f[3]))].sort();
+  $("h-tipo").innerHTML = '<option value="">Todos</option>' + tipos.map(t => `<option>${esc(t)}</option>`).join("");
+  pintar();
+}
+function grafico(id, cfg) {
+  graficos[id]?.destroy();
+  Chart.defaults.font.family = css("--f-display"); Chart.defaults.color = css("--muted"); Chart.defaults.borderColor = css("--line");
+  graficos[id] = new Chart($(id), cfg);
+}
+const kpi = (t, v, s = "") => `<div class="kpi"><span>${t}</span><b>${v}</b>${s ? `<small>${s}</small>` : ""}</div>`;
+const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
+const delta = (d, suf = "") => d === null ? "" : `<span class="delta ${d > 0 ? "up" : d < 0 ? "down" : ""}">${d > 0 ? "+" : ""}${d}${suf} vs día anterior</span>`;
+
+function pintar() {
+  document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", b.dataset.v === vista));
+  ["1", "2", "3"].forEach(v => { $("v" + v).hidden = v !== vista; $("v" + v).style.display = v === vista ? "flex" : "none"; });
+  $("desc").textContent = DESC[vista];
+  $("vacio").hidden = D.fechas.length > 0;
+  if (!D.fechas.length) { ["1", "2", "3"].forEach(v => $("v" + v).style.display = "none"); return; }
+  ({1: v1, 2: v2, 3: v3})[vista]();
+}
+
+function v1() {
+  const dia = $("dia").value || D.fechas.at(-1), fs = D.porFecha[dia] || [];
+  const i = D.fechas.indexOf(dia), prev = i > 0 ? D.porFecha[D.fechas[i - 1]] : null;
+  const op = fs.filter(f => f[6] === "Operativo").length, mt = fs.length - op;
+  const pop = prev ? prev.filter(f => f[6] === "Operativo").length : null;
+  $("k1").innerHTML = kpi("Buses reportados", fs.length) + kpi("Operativos", op, delta(prev ? op - pop : null)) +
+    kpi("En mantenimiento", mt, delta(prev ? mt - (prev.length - pop) : null)) +
+    kpi("Disponibilidad", pct(op, fs.length) + "%", delta(prev ? pct(op, fs.length) - pct(pop, prev.length) : null, " pts"));
+  const T = D.terminales;
+  grafico("c-term", {type: "bar", data: {labels: T, datasets: [
+      {label: "Operativo", data: T.map(t => fs.filter(f => f[5] === t && f[6] === "Operativo").length), backgroundColor: css("--ok")},
+      {label: "Mantenimiento", data: T.map(t => fs.filter(f => f[5] === t && f[6] === "Mantenimiento").length), backgroundColor: css("--mt")}]},
+    options: {indexAxis: "y", maintainAspectRatio: false, scales: {x: {stacked: true, ticks: {precision: 0}}, y: {stacked: true}}, plugins: {legend: {position: "bottom"}}}});
+  const tipos = [...new Set(fs.map(f => f[3]))].sort();
+  $("t-tipo").innerHTML = `<table><thead><tr><th>Tipo bus</th><th>Operativos</th><th>Mantenimiento</th><th>Total</th><th>Disponibilidad</th></tr></thead><tbody>` +
+    tipos.map(t => { const g = fs.filter(f => f[3] === t), o = g.filter(f => f[6] === "Operativo").length;
+      return `<tr><td><b>${esc(t)}</b></td><td class="mono">${o}</td><td class="mono">${g.length - o}</td><td class="mono">${g.length}</td><td><span class="pill ${pct(o, g.length) >= 50 ? "p-ok" : "p-mt"}">${pct(o, g.length)}%</span></td></tr>`; }).join("") + "</tbody></table>";
+  const m = fs.filter(f => f[6] === "Mantenimiento");
+  $("t-mant").innerHTML = m.length ? `<table><thead><tr><th>Interno</th><th>Placa</th><th>Tipo</th><th>Marca</th><th>Terminal Real</th><th>Observación</th></tr></thead><tbody>` +
+    m.map(f => `<tr><td class="mono"><b>${esc(f[1])}</b></td><td class="mono">${esc(f[2])}</td><td>${esc(f[3])}</td><td>${esc(f[4])}</td><td>${esc(f[5])}</td><td>${esc(f[7])}</td></tr>`).join("") + "</tbody></table>"
+    : '<p class="note">Ningún bus en mantenimiento este día.</p>';
+}
+
+function v2() {
+  const F = D.fechas, serie = F.map(d => { const fs = D.porFecha[d]; return pct(fs.filter(f => f[6] === "Operativo").length, fs.length); });
+  const prom = Math.round(serie.reduce((a, b) => a + b, 0) / serie.length);
+  const max = Math.max(...serie), min = Math.min(...serie);
+  $("k2").innerHTML = kpi("Días reportados", F.length) + kpi("Disponibilidad promedio", prom + "%") +
+    kpi("Mejor día", max + "%", fmtFecha(F[serie.indexOf(max)])) + kpi("Peor día", min + "%", fmtFecha(F[serie.indexOf(min)]));
+  const labels = F.map(d => d.slice(8, 10) + "-" + d.slice(5, 7));
+  grafico("c-disp", {type: "line", data: {labels, datasets: [{label: "% operativos", data: serie, borderColor: css("--accent"), backgroundColor: css("--accent-bg"), fill: true, tension: .25, pointRadius: 3}]},
+    options: {maintainAspectRatio: false, scales: {y: {min: 0, max: 100, ticks: {callback: v => v + "%"}}}, plugins: {legend: {display: false}}}});
+  const col = ["--t1", "--t2", "--t3", "--t4"];
+  grafico("c-dist", {type: "bar", data: {labels, datasets: D.terminales.map((t, i) => ({label: t, data: F.map(d => D.porFecha[d].filter(f => f[5] === t).length), backgroundColor: css(col[i])}))},
+    options: {maintainAspectRatio: false, scales: {x: {stacked: true}, y: {stacked: true, ticks: {precision: 0}}}, plugins: {legend: {position: "bottom"}}}});
+}
+
+function v3() {
+  const F = D.fechas.slice(-31), tipo = $("h-tipo").value, sol = $("h-sol").value;
+  const buses = {};
+  D.filas.forEach(f => { if (!F.includes(f[0])) return; (buses[f[1]] ||= {interno: f[1], placa: f[2], tipo: f[3], d: {}}).d[f[0]] = f; });
+  let lista = Object.values(buses).filter(b => !tipo || b.tipo === tipo);
+  lista.forEach(b => {
+    b.mt = F.filter(d => b.d[d]?.[6] === "Mantenimiento").length;
+    b.racha = 0; for (let i = F.length - 1; i >= 0 && b.d[F[i]]?.[6] === "Mantenimiento"; i--) b.racha++;
+  });
+  const todos = lista;
+  if (sol) lista = lista.filter(b => b.mt > 0);
+  lista.sort((a, b) => b.mt - a.mt || b.racha - a.racha || a.interno.localeCompare(b.interno, "es", {numeric: true}));
+  const largas = todos.filter(b => b.racha >= 7).length;
+  const nunca = todos.filter(b => b.mt === 0).length;
+  $("k3").innerHTML = kpi("Días mostrados", F.length) + kpi("Buses siempre operativos", nunca, `de ${todos.length}`) +
+    kpi("Detenidos 7+ días seguidos", largas, "hasta el último reporte") +
+    kpi("Prom. días en mantención", todos.length ? (todos.reduce((a, b) => a + b.mt, 0) / todos.length).toFixed(1) : 0, "por bus");
+  $("heat").innerHTML = `<table class="heat"><thead><tr><th class="b">Interno</th>${F.map(d => `<th>${d.slice(8, 10)}-${d.slice(5, 7)}</th>`).join("")}<th class="b" style="text-align:left">Días mant.</th></tr></thead><tbody>` +
+    lista.map(b => `<tr><th class="b mono" title="${esc(b.placa + " · " + b.tipo)}">${esc(b.interno)}</th>${F.map(d => { const f = b.d[d];
+      return f ? `<td class="c ${f[6] === "Operativo" ? "o" : "m"}" title="${fmtFecha(d)} · ${esc(f[5])} · ${esc(f[6])}${f[7] ? " · " + esc(f[7]) : ""}">${LETRA[f[5]] || ""}</td>` : `<td class="c n" title="${fmtFecha(d)} · sin dato"></td>`; }).join("")}<td class="d mono">${b.mt}</td></tr>`).join("") +
+    "</tbody></table>";
+}
+
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => { vista = b.dataset.v; guardarPref("flota_dash", vista); pintar(); });
+$("dia").onchange = v1; $("h-tipo").onchange = v3; $("h-sol").onchange = v3;
+$("aplicar").onclick = () => cargar().catch(x => alert(x.message));
+["desde", "hasta"].forEach(id => $(id).addEventListener("change", enlaces));
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => D && pintar());
+
+(async () => {
+  await barra("/dashboard");
+  const h = hoyISO(), d = new Date(h + "T12:00:00"); d.setDate(d.getDate() - 29);
+  $("hasta").value = h; $("desde").value = d.toISOString().slice(0, 10);
+  try { await cargar(); } catch (x) { $("vacio").hidden = false; $("vacio").className = "msg err"; $("vacio").textContent = x.message; }
+})();
+</script>
+</body>
+</html>

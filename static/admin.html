@@ -1,0 +1,85 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Usuarios y buses · Control de Flota</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/base.css">
+<style>
+h1{font-size:1.45rem;font-weight:800}
+.card h2{font-size:1.05rem;margin-bottom:10px}
+form.row{margin-bottom:12px}
+td .row{gap:6px;align-items:center}
+.off td{opacity:.55}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Usuarios y buses</h1>
+  <div id="msg" class="msg" hidden></div>
+
+  <section class="card pad">
+    <h2>Usuarios y contraseñas</h2>
+    <form class="row" id="f-u">
+      <label class="f">Usuario<input id="u-usuario" required autocomplete="off"></label>
+      <label class="f">Nombre completo<input id="u-nombre" required></label>
+      <label class="f">Contraseña (mínimo 8)<input id="u-clave" type="password" required minlength="8" autocomplete="new-password"></label>
+      <label class="f">Rol<select id="u-rol"><option value="operador">Operador</option><option value="admin">Administrador</option></select></label>
+      <button class="btn">Crear usuario</button>
+    </form>
+    <div class="scroll"><table><thead><tr><th>Usuario</th><th>Nombre</th><th>Rol</th><th>Estado</th><th>Nueva contraseña</th></tr></thead><tbody id="t-u"></tbody></table></div>
+  </section>
+
+  <section class="card pad">
+    <h2>Nómina de buses</h2>
+    <p class="note" style="margin-bottom:10px">Los buses inactivos no aparecen en los reportes nuevos; su historial se conserva.</p>
+    <form class="row" id="f-b">
+      <label class="f">Placa<input id="b-placa" required></label>
+      <label class="f">Interno<input id="b-interno" required></label>
+      <label class="f">Tipo bus<input id="b-tipo_bus"></label>
+      <label class="f">Tipo flota<input id="b-tipo_flota"></label>
+      <label class="f">Marca chasis<input id="b-marca_chasis"></label>
+      <label class="f">Terminal OP<input id="b-terminal_op" value="PIE ANDINO"></label>
+      <button class="btn">Agregar bus</button>
+    </form>
+    <div class="scroll"><table><thead><tr><th>Interno</th><th>Placa</th><th>Tipo bus</th><th>Tipo flota</th><th>Marca</th><th>Terminal OP</th><th>Estado</th></tr></thead><tbody id="t-b"></tbody></table></div>
+  </section>
+</div>
+<script src="/static/comun.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+function aviso(t, ok) { const m = $("msg"); m.hidden = false; m.className = "msg " + (ok ? "ok" : "err"); m.textContent = t; window.scrollTo({top: 0, behavior: "smooth"}); }
+async function hacer(url, body, okMsg) { try { await api(url, body); aviso(okMsg, true); await cargar(); } catch (x) { aviso(x.message); } }
+
+async function cargar() {
+  const d = await api("/api/admin/datos");
+  $("t-u").innerHTML = d.usuarios.map(u => `<tr class="${u.activo ? "" : "off"}">
+    <td class="mono">${esc(u.usuario)}</td><td>${esc(u.nombre)}</td>
+    <td><select data-rol="${u.id}"><option value="operador" ${u.rol === "operador" ? "selected" : ""}>Operador</option><option value="admin" ${u.rol === "admin" ? "selected" : ""}>Administrador</option></select></td>
+    <td><button class="btn sec" data-act="${u.id}" data-v="${u.activo ? 0 : 1}">${u.activo ? "Desactivar" : "Activar"}</button></td>
+    <td><div class="row"><input type="password" placeholder="Nueva contraseña" data-pw="${u.id}" autocomplete="new-password" minlength="8"><button class="btn sec" data-setpw="${u.id}">Cambiar</button></div></td></tr>`).join("");
+  $("t-b").innerHTML = d.buses.map(b => `<tr class="${b.activo ? "" : "off"}"><td class="mono"><b>${esc(b.interno)}</b></td><td class="mono">${esc(b.placa)}</td><td>${esc(b.tipo_bus)}</td><td>${esc(b.tipo_flota)}</td><td>${esc(b.marca_chasis)}</td><td>${esc(b.terminal_op)}</td>
+    <td><button class="btn sec" data-bus="${b.id}" data-v="${b.activo ? 0 : 1}">${b.activo ? "Desactivar" : "Activar"}</button></td></tr>`).join("");
+}
+document.addEventListener("change", e => { const id = e.target.dataset.rol; if (id) hacer(`/api/admin/usuarios/${id}`, {rol: e.target.value}, "Rol actualizado."); });
+document.addEventListener("click", e => {
+  const t = e.target;
+  if (t.dataset.act) hacer(`/api/admin/usuarios/${t.dataset.act}`, {activo: t.dataset.v === "1"}, "Usuario actualizado.");
+  if (t.dataset.setpw) { const v = document.querySelector(`[data-pw="${t.dataset.setpw}"]`).value;
+    if (v.length < 8) return aviso("La contraseña debe tener al menos 8 caracteres.");
+    hacer(`/api/admin/usuarios/${t.dataset.setpw}`, {clave: v}, "Contraseña cambiada."); }
+  if (t.dataset.bus) hacer("/api/admin/buses", {id: +t.dataset.bus, activo: t.dataset.v === "1"}, "Bus actualizado.");
+});
+$("f-u").addEventListener("submit", async e => { e.preventDefault();
+  await hacer("/api/admin/usuarios", {usuario: $("u-usuario").value, nombre: $("u-nombre").value, clave: $("u-clave").value, rol: $("u-rol").value}, "Usuario creado.");
+  if (!$("msg").classList.contains("err")) e.target.reset(); });
+$("f-b").addEventListener("submit", async e => { e.preventDefault();
+  const b = {}; ["placa", "interno", "tipo_bus", "tipo_flota", "marca_chasis", "terminal_op"].forEach(k => b[k] = $("b-" + k).value);
+  await hacer("/api/admin/buses", b, "Bus agregado.");
+  if (!$("msg").classList.contains("err")) e.target.reset(); });
+(async () => { await barra("/admin"); await cargar(); })().catch(x => aviso(x.message));
+</script>
+</body>
+</html>

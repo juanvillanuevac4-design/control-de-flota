@@ -1,0 +1,257 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Reporte diario · Control de Flota</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/base.css">
+<style>
+.head{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-end;justify-content:space-between}
+.head h1{font-size:1.45rem;font-weight:800}
+.head .fecha{font:600 1rem var(--f-mono)}
+.sum{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.tools{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;justify-content:space-between}
+.tools .row{align-items:center}
+.cambio{box-shadow:inset 3px 0 0 var(--warn)}
+.send{position:sticky;bottom:0;z-index:10;background:var(--surface);border-top:1px solid var(--line);margin:0 -16px -48px;padding:12px 16px;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+
+/* A · Tabla */
+#vA td select,#vA td input{width:100%}
+#vA td.obs{min-width:180px}
+#vA tr.mt td:first-child{box-shadow:inset 3px 0 0 var(--mt)}
+#vA tr.ok td:first-child{box-shadow:inset 3px 0 0 var(--ok)}
+
+/* B · Tarjetas */
+#vB{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
+.bus{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;border-top:4px solid var(--ok)}
+.bus.mt{border-top-color:var(--mt)}
+.bus .t{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
+.bus .t b{font:700 1.3rem var(--f-mono)}
+.bus .t span{font-size:.78rem;color:var(--muted)}
+.seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:var(--surface2);color:var(--muted);font:700 .8rem var(--f-display);padding:8px 4px;cursor:pointer}
+.seg button.on.o{background:var(--ok);color:#fff}
+.seg button.on.m{background:var(--mt);color:#fff}
+.bus input{width:100%}
+.bus select{width:100%}
+
+/* C · Por terminal */
+#vC{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
+.col{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:8px;min-height:120px}
+.col h3{font-size:.95rem;display:flex;justify-content:space-between;align-items:center;gap:8px}
+.col h3 small{font:500 .8rem var(--f-mono);color:var(--muted)}
+.col .bar{height:6px;border-radius:3px;background:var(--mt-bg);overflow:hidden}
+.col .bar i{display:block;height:100%;background:var(--ok)}
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{font:600 .82rem var(--f-mono);border-radius:7px;padding:5px 8px;cursor:pointer;border:1px solid transparent}
+.chip.ok{background:var(--ok-bg);color:var(--ok)}
+.chip.mt{background:var(--mt-bg);color:var(--mt)}
+.chip.ch{border-color:var(--warn)}
+.chip.obs::after{content:"•";margin-left:3px}
+.leyenda{display:flex;gap:12px;flex-wrap:wrap;font-size:.8rem;color:var(--muted)}
+fieldset[disabled] .seg button,fieldset[disabled] .chip{cursor:default}
+fieldset{border:0;padding:0;margin:0;min-width:0}
+@media (max-width:640px){.send{padding:8px 16px;gap:6px}.send .note{display:none}.send .btn{width:100%;justify-content:center}.send .row{width:100%}}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <section class="head">
+    <div>
+      <h1>Reporte diario de distribución</h1>
+      <div class="fecha" id="fecha"></div>
+    </div>
+    <div class="row">
+      <label class="f">Encargado que envía<input id="encargado" maxlength="120" style="min-width:240px"></label>
+      <label class="f" id="l-fecha" hidden>Fecha (administrador)<input type="date" id="sel-fecha"></label>
+    </div>
+  </section>
+  <div id="estado" class="msg info" hidden></div>
+
+  <section class="card pad tools">
+    <div class="tabs" role="tablist" aria-label="Propuesta de interfaz">
+      <button role="tab" data-v="A">A · Tabla</button>
+      <button role="tab" data-v="B">B · Tarjetas</button>
+      <button role="tab" data-v="C">C · Por terminal</button>
+    </div>
+    <div class="row">
+      <input type="search" id="buscar" placeholder="Buscar interno o placa" aria-label="Buscar">
+      <select id="f-tipo" aria-label="Tipo de bus"><option value="">Todos los tipos</option></select>
+      <select id="f-estado" aria-label="Estado"><option value="">Todos los estados</option><option>Operativo</option><option>Mantenimiento</option></select>
+    </div>
+  </section>
+  <p class="note" id="desc"></p>
+
+  <fieldset id="fs">
+    <div id="vA" class="card scroll" hidden></div>
+    <div id="vB" hidden></div>
+    <div id="vC" hidden></div>
+  </fieldset>
+
+  <div class="send">
+    <div class="sum" id="sum"></div>
+    <div class="row" style="align-items:center"><span class="note" id="cambios"></span><button class="btn" id="enviar">Enviar reporte del día</button></div>
+  </div>
+</div>
+
+<dialog id="dlg"><form method="dialog" style="display:flex;flex-direction:column;gap:10px">
+  <h3 id="d-t"></h3><p class="note" id="d-s"></p>
+  <label class="f">Terminal Real<select id="d-term"></select></label>
+  <label class="f">Estado<select id="d-est"></select></label>
+  <label class="f">Observación<input id="d-obs" maxlength="500"></label>
+  <div class="row"><button class="btn" value="ok">Aplicar</button><button class="btn sec" value="cancel">Cancelar</button></div>
+</form></dialog>
+
+<script src="/static/comun.js"></script>
+<script>
+const DESC = {
+  A: "Propuesta A: tabla igual a la hoja Base. Rápida en computador; cada fila se edita en línea con listas desplegables.",
+  B: "Propuesta B: una tarjeta por bus con botón grande Operativo / Mantenimiento. Pensada para celular en el patio.",
+  C: "Propuesta C: buses agrupados por Terminal Real. Toca un bus para moverlo o cambiar su estado; se ve la distribución de un vistazo.",
+};
+let yo, datos, filas = [], original = {}, vista = leerPref("flota_vista", "A");
+const $ = id => document.getElementById(id);
+const llave = f => f.terminal_real + "|" + f.operativo + "|" + (f.observacion || "");
+const opts = (lista, v) => lista.map(o => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("");
+
+async function cargar(fecha) {
+  datos = await api("/api/reporte" + (fecha ? "?fecha=" + fecha : ""));
+  filas = datos.filas;
+  original = Object.fromEntries(filas.map(f => [f.interno, llave(f)]));
+  $("fecha").textContent = diaSemana(datos.fecha) + " " + fmtFecha(datos.fecha);
+  $("sel-fecha").value = datos.fecha;
+  const tipos = [...new Set(filas.map(f => f.tipo_bus))].sort();
+  $("f-tipo").innerHTML = '<option value="">Todos los tipos</option>' + tipos.map(t => `<option>${esc(t)}</option>`).join("");
+  const est = $("estado");
+  est.hidden = false;
+  if (datos.existe) {
+    const r = datos.reporte;
+    est.className = "msg ok";
+    est.textContent = `Reporte enviado a las ${r.hora} por ${r.encargado}` + (r.modificado_por ? ` · corregido por ${r.modificado_por}` : "") +
+      (datos.puede_editar ? ". Como administrador puedes corregirlo." : ". Ya no se puede modificar; solo un administrador puede corregirlo.");
+    $("encargado").value = r.encargado;
+  } else {
+    est.className = "msg info";
+    est.textContent = datos.prellenado_desde
+      ? `Datos prellenados con el reporte del ${diaSemana(datos.prellenado_desde)} ${fmtFecha(datos.prellenado_desde)}. Cambia solo lo que se movió y envía.`
+      : "Primer reporte: datos prellenados con la distribución del Excel (Patio Real / Observación).";
+    $("encargado").value = yo.nombre;
+  }
+  $("fs").disabled = !datos.puede_editar;
+  $("encargado").disabled = !datos.puede_editar;
+  $("enviar").hidden = !datos.puede_editar;
+  $("enviar").textContent = datos.existe ? "Guardar corrección" : "Enviar reporte del día";
+  pintar();
+}
+
+function visibles() {
+  const q = $("buscar").value.trim().toUpperCase(), t = $("f-tipo").value, e = $("f-estado").value;
+  return filas.filter(f => (!q || f.interno.includes(q) || f.placa.includes(q)) && (!t || f.tipo_bus === t) && (!e || f.operativo === e));
+}
+
+function resumen() {
+  const op = filas.filter(f => f.operativo === "Operativo").length, mt = filas.length - op;
+  const ch = filas.filter(f => original[f.interno] !== llave(f)).length;
+  $("sum").innerHTML = `<span class="pill p-info">${filas.length} buses</span><span class="pill p-ok"><i></i>${op} operativos</span><span class="pill p-mt"><i></i>${mt} en mantenimiento</span>`;
+  $("cambios").textContent = ch ? `${ch} cambio${ch > 1 ? "s" : ""} respecto al día anterior` : "Sin cambios respecto al día anterior";
+}
+
+function cambiar(interno, campo, valor) {
+  const f = filas.find(x => x.interno === interno);
+  f[campo] = valor;
+  if (campo === "observacion") { resumen(); return; }  // sin repintar, para no perder el foco
+  pintar();
+}
+
+function pintar() {
+  document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", b.dataset.v === vista));
+  ["A", "B", "C"].forEach(v => $("v" + v).hidden = v !== vista);
+  $("desc").textContent = DESC[vista];
+  const vs = visibles(), T = datos.terminales, E = datos.estados;
+  const ch = f => original[f.interno] !== llave(f);
+  if (vista === "A") {
+    $("vA").innerHTML = `<table><thead><tr><th>Placa</th><th>Interno</th><th>Tipo bus</th><th>Tipo flota</th><th>Marca chasis</th><th>Terminal OP</th><th>Terminal Real</th><th>Operativo</th><th>Observación</th></tr></thead><tbody>` +
+      vs.map(f => `<tr class="${f.operativo === "Operativo" ? "ok" : "mt"} ${ch(f) ? "cambio" : ""}" data-i="${esc(f.interno)}">
+        <td class="mono">${esc(f.placa)}</td><td class="mono"><b>${esc(f.interno)}</b></td><td>${esc(f.tipo_bus)}</td><td>${esc(f.tipo_flota)}</td><td>${esc(f.marca_chasis)}</td><td>${esc(f.terminal_op)}</td>
+        <td><select data-c="terminal_real" aria-label="Terminal Real ${esc(f.interno)}">${opts(T, f.terminal_real)}</select></td>
+        <td><select data-c="operativo" aria-label="Estado ${esc(f.interno)}">${opts(E, f.operativo)}</select></td>
+        <td class="obs"><input data-c="observacion" value="${esc(f.observacion)}" maxlength="500" aria-label="Observación ${esc(f.interno)}"></td></tr>`).join("") +
+      `</tbody></table>`;
+  } else if (vista === "B") {
+    $("vB").innerHTML = vs.map(f => `<article class="bus ${f.operativo === "Operativo" ? "" : "mt"} ${ch(f) ? "cambio" : ""}" data-i="${esc(f.interno)}">
+      <div class="t"><b>${esc(f.interno)}</b><span>${esc(f.placa)} · ${esc(f.tipo_bus)} · ${esc(f.marca_chasis)}</span></div>
+      <div class="seg"><button type="button" class="o ${f.operativo === "Operativo" ? "on" : ""}" data-e="Operativo">Operativo</button><button type="button" class="m ${f.operativo === "Mantenimiento" ? "on" : ""}" data-e="Mantenimiento">Mantenimiento</button></div>
+      <select data-c="terminal_real" aria-label="Terminal Real">${opts(T, f.terminal_real)}</select>
+      <input data-c="observacion" value="${esc(f.observacion)}" placeholder="Observación" maxlength="500"></article>`).join("") || '<p class="note">Sin buses con ese filtro.</p>';
+  } else {
+    $("vC").innerHTML = T.map(t => {
+      const g = vs.filter(f => f.terminal_real === t), op = g.filter(f => f.operativo === "Operativo").length;
+      return `<section class="col"><h3>${esc(t)} <small>${op}/${g.length} operativos</small></h3>
+        <div class="bar"><i style="width:${g.length ? op / g.length * 100 : 0}%"></i></div>
+        <div class="chips">${g.map(f => `<button type="button" class="chip ${f.operativo === "Operativo" ? "ok" : "mt"} ${ch(f) ? "ch" : ""} ${f.observacion ? "obs" : ""}" data-i="${esc(f.interno)}" title="${esc(f.placa + " · " + f.tipo_bus + (f.observacion ? " · " + f.observacion : ""))}">${esc(f.interno)}</button>`).join("") || '<span class="note">Sin buses</span>'}</div></section>`;
+    }).join("") + `<p class="note leyenda" style="grid-column:1/-1"><span class="pill p-ok"><i></i>Operativo</span><span class="pill p-mt"><i></i>Mantenimiento</span><span>Borde amarillo: cambió respecto al día anterior · punto: tiene observación</span></p>`;
+  }
+  resumen();
+}
+
+// Eventos (delegados)
+document.addEventListener("change", e => {
+  const c = e.target.dataset.c, tr = e.target.closest("[data-i]");
+  if (c && tr) cambiar(tr.dataset.i, c, e.target.value);
+});
+$("vB").addEventListener("click", e => {
+  const b = e.target.closest("button[data-e]");
+  if (b && !$("fs").disabled) cambiar(b.closest("[data-i]").dataset.i, "operativo", b.dataset.e);
+});
+let editando;
+$("vC").addEventListener("click", e => {
+  const b = e.target.closest(".chip");
+  if (!b || $("fs").disabled) return;
+  editando = filas.find(f => f.interno === b.dataset.i);
+  $("d-t").textContent = "Bus " + editando.interno;
+  $("d-s").textContent = `${editando.placa} · ${editando.tipo_bus} · ${editando.tipo_flota} · ${editando.marca_chasis}`;
+  $("d-term").innerHTML = opts(datos.terminales, editando.terminal_real);
+  $("d-est").innerHTML = opts(datos.estados, editando.operativo);
+  $("d-obs").value = editando.observacion || "";
+  $("dlg").showModal();
+});
+$("dlg").addEventListener("close", () => {
+  if ($("dlg").returnValue !== "ok" || !editando) return;
+  Object.assign(editando, {terminal_real: $("d-term").value, operativo: $("d-est").value, observacion: $("d-obs").value});
+  pintar();
+});
+document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => { vista = b.dataset.v; guardarPref("flota_vista", vista); pintar(); });
+["buscar", "f-tipo", "f-estado"].forEach(id => $(id).addEventListener("input", pintar));
+$("sel-fecha").addEventListener("change", e => e.target.value && cargar(e.target.value).catch(x => alert(x.message)));
+
+$("enviar").onclick = async () => {
+  const nombre = $("encargado").value.trim();
+  if (!nombre) { alert("Escribe el nombre del encargado que envía el reporte."); return; }
+  const msg = datos.existe ? "¿Guardar la corrección de este reporte?" : `¿Enviar el reporte del ${fmtFecha(datos.fecha)}? Solo se permite un envío por día.`;
+  if (!confirm(msg)) return;
+  $("enviar").disabled = true;
+  try {
+    await api("/api/reporte", {fecha: datos.fecha, encargado: nombre,
+      filas: filas.map(f => ({interno: f.interno, terminal_real: f.terminal_real, operativo: f.operativo, observacion: f.observacion}))});
+    await cargar(datos.fecha);
+    window.scrollTo({top: 0, behavior: "smooth"});
+  } catch (x) { alert(x.message); }
+  $("enviar").disabled = false;
+};
+window.addEventListener("beforeunload", e => {
+  if (datos && datos.puede_editar && !datos.existe && filas.some(f => original[f.interno] !== llave(f))) e.preventDefault();
+});
+
+(async () => {
+  try {
+    yo = await barra("/");
+    if (yo.rol === "admin") { $("l-fecha").hidden = false; }
+    $("sel-fecha").max = new Date().toISOString().slice(0, 10);
+    await cargar();
+  } catch (x) { $("estado").hidden = false; $("estado").className = "msg err"; $("estado").textContent = x.message; }
+})();
+</script>
+</body>
+</html>

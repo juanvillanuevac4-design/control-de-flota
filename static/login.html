@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Ingresar · Control de Flota</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/base.css">
+<style>
+.box{max-width:380px;width:100%;margin:12vh auto 0;padding:24px;display:flex;flex-direction:column;gap:14px}
+h1{font-size:1.35rem;font-weight:800}
+input{font-size:1rem;padding:10px 12px}
+.btn{padding:11px 14px;font-size:.95rem;justify-content:center}
+.err{color:var(--mt);font-size:.88rem;min-height:1.2em;margin:0}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <form class="box card" id="f">
+    <h1>Control de Flota</h1>
+    <p class="note">Distribución diaria de buses del depósito.</p>
+    <label class="f" for="usuario">Usuario<input id="usuario" autocomplete="username" required autofocus></label>
+    <label class="f" for="clave">Contraseña<input id="clave" type="password" autocomplete="current-password" required></label>
+    <p class="err" id="err"></p>
+    <button class="btn" type="submit">Ingresar</button>
+  </form>
+</div>
+<script>
+document.getElementById("f").addEventListener("submit", async e => {
+  e.preventDefault();
+  const err = document.getElementById("err"); err.textContent = "";
+  try {
+    const r = await fetch("/api/login", {method: "POST", headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({usuario: usuario.value, clave: clave.value})});
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) { err.textContent = j.error || "No se pudo ingresar."; return; }
+    location.href = "/";
+  } catch (x) { err.textContent = "No se pudo conectar con el servidor. Intenta de nuevo."; }
+});
+</script>
+</body>
+</html>
