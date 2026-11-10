@@ -45,7 +45,10 @@
 .col .bar{height:6px;border-radius:3px;background:var(--mt-bg);overflow:hidden}
 .col .bar i{display:block;height:100%;background:var(--ok)}
 .chips{display:flex;flex-wrap:wrap;gap:6px}
-.chip{font:600 .82rem var(--f-mono);border-radius:7px;padding:5px 8px;cursor:pointer;border:1px solid transparent}
+.chip{font:600 .82rem var(--f-mono);border-radius:7px;padding:5px 8px;cursor:grab;border:1px solid transparent;touch-action:manipulation;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.chip.arrastrando{opacity:.35}
+.fantasma{position:fixed;z-index:50;pointer-events:none;transform:translate(-50%,-50%) scale(1.15);box-shadow:0 6px 18px rgb(0 0 0 / .25)}
+.col.destino{outline:2px dashed var(--accent);outline-offset:-2px;background:var(--accent-bg)}
 .chip.ok{background:var(--ok-bg);color:var(--ok)}
 .chip.mt{background:var(--mt-bg);color:var(--mt)}
 .chip.ch{border-color:var(--warn)}
@@ -104,7 +107,7 @@ fieldset{border:0;padding:0;margin:0;min-width:0}
 const DESC = {
   A: "Propuesta A: tabla igual a la hoja Base. Rápida en computador; cada fila se edita en línea con listas desplegables.",
   B: "Propuesta B: una tarjeta por bus con botón grande Operativo / Mantenimiento. Pensada para celular en el patio.",
-  C: "Buses agrupados por Terminal Real. Toca un número de bus para cambiar su terminal, estado u observación.",
+  C: "Arrastra un bus a otra terminal para moverlo. Doble click cambia Operativo / Mantenimiento. Un click abre el detalle (observación). En celular: mantén presionado y arrastra.",
 };
 let yo, datos, filas = [], original = {}, vista = "C";  // interfaz elegida: C · Por terminal (A y B quedan en el historial de git)
 const $ = id => document.getElementById(id);
@@ -182,10 +185,10 @@ function pintar() {
   } else {
     $("vC").innerHTML = T.map(t => {
       const g = vs.filter(f => f.terminal_real === t), op = g.filter(f => f.operativo === "Operativo").length;
-      return `<section class="col"><h3>${esc(t)} <small>${op}/${g.length} operativos</small></h3>
+      return `<section class="col" data-t="${esc(t)}"><h3>${esc(t)} <small>${op}/${g.length} operativos</small></h3>
         <div class="bar"><i style="width:${g.length ? op / g.length * 100 : 0}%"></i></div>
         <div class="chips">${g.map(f => `<button type="button" class="chip ${f.operativo === "Operativo" ? "ok" : "mt"} ${ch(f) ? "ch" : ""} ${f.observacion ? "obs" : ""}" data-i="${esc(f.interno)}" title="${esc(f.placa + " · " + f.tipo_bus + (f.observacion ? " · " + f.observacion : ""))}">${esc(f.interno)}</button>`).join("") || '<span class="note">Sin buses</span>'}</div></section>`;
-    }).join("") + `<p class="note leyenda" style="grid-column:1/-1"><span class="pill p-ok"><i></i>Operativo</span><span class="pill p-mt"><i></i>Mantenimiento</span><span>Borde amarillo: cambió respecto al día anterior · punto: tiene observación</span></p>`;
+    }).join("") + `<p class="note leyenda" style="grid-column:1/-1"><span class="pill p-ok"><i></i>Operativo</span><span class="pill p-mt"><i></i>Mantenimiento</span><span>Arrastra un bus a otra terminal para moverlo · doble click cambia Operativo / Mantenimiento · un click abre el detalle · borde amarillo: cambió respecto al día anterior · punto: tiene observación</span></p>`;
   }
   resumen();
 }
@@ -199,18 +202,78 @@ $("vB").addEventListener("click", e => {
   const b = e.target.closest("button[data-e]");
   if (b && !$("fs").disabled) cambiar(b.closest("[data-i]").dataset.i, "operativo", b.dataset.e);
 });
-let editando;
-$("vC").addEventListener("click", e => {
-  const b = e.target.closest(".chip");
-  if (!b || $("fs").disabled) return;
-  editando = filas.find(f => f.interno === b.dataset.i);
+let editando, tClick, arrastre = null, sinClick = false;
+function abrirDetalle(interno) {
+  editando = filas.find(f => f.interno === interno);
   $("d-t").textContent = "Bus " + editando.interno;
   $("d-s").textContent = `${editando.placa} · ${editando.tipo_bus} · ${editando.tipo_flota} · ${editando.marca_chasis}`;
   $("d-term").innerHTML = opts(datos.terminales, editando.terminal_real);
   $("d-est").innerHTML = opts(datos.estados, editando.operativo);
   $("d-obs").value = editando.observacion || "";
   $("dlg").showModal();
+}
+// Un click abre el detalle (espera un instante por si es doble click); doble click alterna el estado.
+$("vC").addEventListener("click", e => {
+  const b = e.target.closest(".chip");
+  if (!b || $("fs").disabled) return;
+  if (sinClick) { sinClick = false; return; }
+  clearTimeout(tClick);
+  if (e.detail > 1) return;
+  tClick = setTimeout(() => abrirDetalle(b.dataset.i), 260);
 });
+$("vC").addEventListener("dblclick", e => {
+  const b = e.target.closest(".chip");
+  if (!b || $("fs").disabled) return;
+  clearTimeout(tClick);
+  const f = filas.find(x => x.interno === b.dataset.i);
+  cambiar(f.interno, "operativo", f.operativo === "Operativo" ? "Mantenimiento" : "Operativo");
+});
+// Arrastrar: con mouse al mover; en pantalla táctil, manteniendo presionado medio segundo.
+$("vC").addEventListener("pointerdown", e => {
+  const b = e.target.closest(".chip");
+  if (!b || $("fs").disabled || e.button > 0) return;
+  arrastre = {b, x: e.clientX, y: e.clientY, activo: false, tactil: e.pointerType !== "mouse"};
+  if (arrastre.tactil) arrastre.t = setTimeout(() => iniciarArrastre(e.clientX, e.clientY), 450);
+});
+function iniciarArrastre(x, y) {
+  if (!arrastre) return;
+  arrastre.activo = true;
+  clearTimeout(tClick);
+  const g = arrastre.b.cloneNode(true);
+  g.classList.add("fantasma"); g.style.left = x + "px"; g.style.top = y + "px";
+  document.body.appendChild(g); arrastre.g = g;
+  arrastre.b.classList.add("arrastrando");
+  if (navigator.vibrate) navigator.vibrate(20);
+}
+function columnaEn(x, y) { const el = document.elementFromPoint(x, y); return el && el.closest("#vC .col"); }
+document.addEventListener("pointermove", e => {
+  if (!arrastre) return;
+  const d = Math.hypot(e.clientX - arrastre.x, e.clientY - arrastre.y);
+  if (!arrastre.activo) {
+    if (arrastre.tactil) { if (d > 10) { clearTimeout(arrastre.t); arrastre = null; } return; }  // estaba desplazando la página
+    if (d < 6) return;
+    iniciarArrastre(e.clientX, e.clientY);
+  }
+  arrastre.g.style.left = e.clientX + "px"; arrastre.g.style.top = e.clientY + "px";
+  document.querySelectorAll("#vC .col.destino").forEach(c => c.classList.remove("destino"));
+  const c = columnaEn(e.clientX, e.clientY);
+  if (c) c.classList.add("destino");
+});
+document.addEventListener("touchmove", e => { if (arrastre && arrastre.activo) e.preventDefault(); }, {passive: false});
+function terminarArrastre(e, soltar) {
+  if (!arrastre) return;
+  clearTimeout(arrastre.t);
+  const a = arrastre; arrastre = null;
+  if (!a.activo) return;
+  sinClick = true; setTimeout(() => sinClick = false, 400);
+  a.g.remove(); a.b.classList.remove("arrastrando");
+  document.querySelectorAll("#vC .col.destino").forEach(c => c.classList.remove("destino"));
+  const c = soltar && columnaEn(e.clientX, e.clientY);
+  if (c && c.dataset.t) cambiar(a.b.dataset.i, "terminal_real", c.dataset.t);
+}
+document.addEventListener("pointerup", e => terminarArrastre(e, true));
+document.addEventListener("pointercancel", e => terminarArrastre(e, false));
+$("vC").addEventListener("contextmenu", e => { if (e.target.closest(".chip")) e.preventDefault(); });
 $("dlg").addEventListener("close", () => {
   if ($("dlg").returnValue !== "ok" || !editando) return;
   Object.assign(editando, {terminal_real: $("d-term").value, operativo: $("d-est").value, observacion: $("d-obs").value});
