@@ -71,18 +71,13 @@ fieldset{border:0;padding:0;margin:0;min-width:0}
   <div id="estado" class="msg info" hidden></div>
 
   <section class="card pad tools">
-    <div class="tabs" role="tablist" aria-label="Propuesta de interfaz">
-      <button role="tab" data-v="A">A · Tabla</button>
-      <button role="tab" data-v="B">B · Tarjetas</button>
-      <button role="tab" data-v="C">C · Por terminal</button>
-    </div>
+    <p class="note" id="desc" style="margin:0;flex:1 1 300px"></p>
     <div class="row">
       <input type="search" id="buscar" placeholder="Buscar interno o placa" aria-label="Buscar">
       <select id="f-tipo" aria-label="Tipo de bus"><option value="">Todos los tipos</option></select>
       <select id="f-estado" aria-label="Estado"><option value="">Todos los estados</option><option>Operativo</option><option>Mantenimiento</option></select>
     </div>
   </section>
-  <p class="note" id="desc"></p>
 
   <fieldset id="fs">
     <div id="vA" class="card scroll" hidden></div>
@@ -109,9 +104,9 @@ fieldset{border:0;padding:0;margin:0;min-width:0}
 const DESC = {
   A: "Propuesta A: tabla igual a la hoja Base. Rápida en computador; cada fila se edita en línea con listas desplegables.",
   B: "Propuesta B: una tarjeta por bus con botón grande Operativo / Mantenimiento. Pensada para celular en el patio.",
-  C: "Propuesta C: buses agrupados por Terminal Real. Toca un bus para moverlo o cambiar su estado; se ve la distribución de un vistazo.",
+  C: "Buses agrupados por Terminal Real. Toca un número de bus para cambiar su terminal, estado u observación.",
 };
-let yo, datos, filas = [], original = {}, vista = leerPref("flota_vista", "C");
+let yo, datos, filas = [], original = {}, vista = "C";  // interfaz elegida: C · Por terminal (A y B quedan en el historial de git)
 const $ = id => document.getElementById(id);
 const llave = f => f.terminal_real + "|" + f.operativo + "|" + (f.observacion || "");
 const opts = (lista, v) => lista.map(o => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("");
@@ -166,7 +161,6 @@ function cambiar(interno, campo, valor) {
 }
 
 function pintar() {
-  document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", b.dataset.v === vista));
   ["A", "B", "C"].forEach(v => $("v" + v).hidden = v !== vista);
   $("desc").textContent = DESC[vista];
   const vs = visibles(), T = datos.terminales, E = datos.estados;
@@ -222,7 +216,6 @@ $("dlg").addEventListener("close", () => {
   Object.assign(editando, {terminal_real: $("d-term").value, operativo: $("d-est").value, observacion: $("d-obs").value});
   pintar();
 });
-document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => { vista = b.dataset.v; guardarPref("flota_vista", vista); pintar(); });
 ["buscar", "f-tipo", "f-estado"].forEach(id => $(id).addEventListener("input", pintar));
 $("sel-fecha").addEventListener("change", e => e.target.value && cargar(e.target.value).catch(x => alert(x.message)));
 

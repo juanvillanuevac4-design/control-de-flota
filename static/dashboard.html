@@ -41,14 +41,6 @@ h1{font-size:1.45rem;font-weight:800}
     </div>
   </section>
 
-  <section class="card pad" style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;justify-content:space-between">
-    <div class="tabs" role="tablist" aria-label="Propuesta de dashboard">
-      <button role="tab" data-v="1">1 · Foto del día</button>
-      <button role="tab" data-v="2">2 · Tendencia</button>
-      <button role="tab" data-v="3">3 · Historial por bus</button>
-    </div>
-    <p class="note" id="desc" style="flex:1 1 300px"></p>
-  </section>
   <div id="vacio" class="msg warn" hidden>No hay reportes en el rango elegido.</div>
 
   <!-- 1 · Foto del día -->
@@ -62,34 +54,13 @@ h1{font-size:1.45rem;font-weight:800}
     <section class="card pad"><h2>Buses en mantenimiento</h2><div class="scroll" id="t-mant"></div></section>
   </div>
 
-  <!-- 2 · Tendencia -->
-  <div id="v2" hidden style="display:flex;flex-direction:column;gap:12px">
-    <div class="kpis" id="k2"></div>
-    <section class="card pad"><h2>Disponibilidad diaria (% operativos)</h2><div class="chart"><canvas id="c-disp"></canvas></div></section>
-    <section class="card pad"><h2>Buses por Terminal Real cada día</h2><div class="chart"><canvas id="c-dist"></canvas></div></section>
-  </div>
 
-  <!-- 3 · Historial por bus -->
-  <div id="v3" hidden style="display:flex;flex-direction:column;gap:12px">
-    <div class="kpis" id="k3"></div>
-    <section class="card pad"><h2>Estado de cada bus por día</h2>
-      <p class="note" style="margin-bottom:8px">Verde: operativo · rojo: mantenimiento · gris: sin dato. La letra es la Terminal Real (P Pie Andino, A Aguirre Luco, J Juanita, O Otro). Ordenado por días en mantenimiento.</p>
-      <div class="row" style="margin-bottom:8px"><label class="f">Tipo de bus<select id="h-tipo"><option value="">Todos</option></select></label>
-        <label class="f">Mostrar<select id="h-sol"><option value="">Todos los buses</option><option value="m">Solo con días en mantenimiento</option></select></label></div>
-      <div class="scroll" id="heat"></div></section>
-  </div>
 </div>
 <script src="/static/comun.js"></script>
 <script>
-const DESC = {
-  1: "Propuesta 1: la situación del día elegido. Indicadores, distribución por terminal y lista de buses en mantenimiento.",
-  2: "Propuesta 2: evolución en el rango elegido. Sirve para ver si la disponibilidad sube o baja y cómo se mueve la flota entre terminales.",
-  3: "Propuesta 3: historial bus por bus. Muestra qué buses llevan más días detenidos y dónde estuvieron.",
-};
 const $ = id => document.getElementById(id);
 const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
-const LETRA = {"Pie Andino": "P", "Aguirre Luco": "A", "Juanita": "J", "Otro": "O"};
-let D, vista = leerPref("flota_dash", "1"), graficos = {};
+let D, vista = "1", graficos = {};
 const hoyISO = () => new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
 
 function enlaces() {
@@ -104,8 +75,6 @@ async function cargar() {
   D.porFecha = {};
   D.filas.forEach(f => (D.porFecha[f[0]] ||= []).push(f));
   $("dia").innerHTML = D.fechas.slice().reverse().map(f => `<option value="${f}">${diaSemana(f)} ${fmtFecha(f)}</option>`).join("");
-  const tipos = [...new Set(D.filas.map(f => f[3]))].sort();
-  $("h-tipo").innerHTML = '<option value="">Todos</option>' + tipos.map(t => `<option>${esc(t)}</option>`).join("");
   pintar();
 }
 // Etiquetas de datos: el valor dentro de cada segmento y el total al final de la barra apilada.
@@ -141,12 +110,9 @@ const pct = (a, b) => b ? Math.round(a / b * 100) : 0;
 const delta = (d, suf = "") => d === null ? "" : `<span class="delta ${d > 0 ? "up" : d < 0 ? "down" : ""}">${d > 0 ? "+" : ""}${d}${suf} vs día anterior</span>`;
 
 function pintar() {
-  document.querySelectorAll(".tabs button").forEach(b => b.setAttribute("aria-selected", b.dataset.v === vista));
-  ["1", "2", "3"].forEach(v => { $("v" + v).hidden = v !== vista; $("v" + v).style.display = v === vista ? "flex" : "none"; });
-  $("desc").textContent = DESC[vista];
   $("vacio").hidden = D.fechas.length > 0;
-  if (!D.fechas.length) { ["1", "2", "3"].forEach(v => $("v" + v).style.display = "none"); return; }
-  ({1: v1, 2: v2, 3: v3})[vista]();
+  $("v1").hidden = !D.fechas.length; $("v1").style.display = D.fechas.length ? "flex" : "none";
+  if (D.fechas.length) v1();
 }
 
 function v1() {
@@ -172,45 +138,8 @@ function v1() {
     : '<p class="note">Ningún bus en mantenimiento este día.</p>';
 }
 
-function v2() {
-  const F = D.fechas, serie = F.map(d => { const fs = D.porFecha[d]; return pct(fs.filter(f => f[6] === "Operativo").length, fs.length); });
-  const prom = Math.round(serie.reduce((a, b) => a + b, 0) / serie.length);
-  const max = Math.max(...serie), min = Math.min(...serie);
-  $("k2").innerHTML = kpi("Días reportados", F.length) + kpi("Disponibilidad promedio", prom + "%") +
-    kpi("Mejor día", max + "%", fmtFecha(F[serie.indexOf(max)])) + kpi("Peor día", min + "%", fmtFecha(F[serie.indexOf(min)]));
-  const labels = F.map(d => d.slice(8, 10) + "-" + d.slice(5, 7));
-  grafico("c-disp", {type: "line", data: {labels, datasets: [{label: "% operativos", data: serie, borderColor: css("--accent"), backgroundColor: css("--accent-bg"), fill: true, tension: .25, pointRadius: 3}]},
-    options: {maintainAspectRatio: false, scales: {y: {min: 0, max: 100, ticks: {callback: v => v + "%"}}}, plugins: {legend: {display: false}}}});
-  const col = ["--t1", "--t2", "--t3", "--t4"];
-  grafico("c-dist", {type: "bar", data: {labels, datasets: D.terminales.map((t, i) => ({label: t, data: F.map(d => D.porFecha[d].filter(f => f[5] === t).length), backgroundColor: css(col[i])}))},
-    options: {maintainAspectRatio: false, scales: {x: {stacked: true}, y: {stacked: true, ticks: {precision: 0}}}, plugins: {legend: {position: "bottom"}}}});
-}
 
-function v3() {
-  const F = D.fechas.slice(-31), tipo = $("h-tipo").value, sol = $("h-sol").value;
-  const buses = {};
-  D.filas.forEach(f => { if (!F.includes(f[0])) return; (buses[f[1]] ||= {interno: f[1], placa: f[2], tipo: f[3], d: {}}).d[f[0]] = f; });
-  let lista = Object.values(buses).filter(b => !tipo || b.tipo === tipo);
-  lista.forEach(b => {
-    b.mt = F.filter(d => b.d[d]?.[6] === "Mantenimiento").length;
-    b.racha = 0; for (let i = F.length - 1; i >= 0 && b.d[F[i]]?.[6] === "Mantenimiento"; i--) b.racha++;
-  });
-  const todos = lista;
-  if (sol) lista = lista.filter(b => b.mt > 0);
-  lista.sort((a, b) => b.mt - a.mt || b.racha - a.racha || a.interno.localeCompare(b.interno, "es", {numeric: true}));
-  const largas = todos.filter(b => b.racha >= 7).length;
-  const nunca = todos.filter(b => b.mt === 0).length;
-  $("k3").innerHTML = kpi("Días mostrados", F.length) + kpi("Buses siempre operativos", nunca, `de ${todos.length}`) +
-    kpi("Detenidos 7+ días seguidos", largas, "hasta el último reporte") +
-    kpi("Prom. días en mantención", todos.length ? (todos.reduce((a, b) => a + b.mt, 0) / todos.length).toFixed(1) : 0, "por bus");
-  $("heat").innerHTML = `<table class="heat"><thead><tr><th class="b">Interno</th>${F.map(d => `<th>${d.slice(8, 10)}-${d.slice(5, 7)}</th>`).join("")}<th class="b" style="text-align:left">Días mant.</th></tr></thead><tbody>` +
-    lista.map(b => `<tr><th class="b mono" title="${esc(b.placa + " · " + b.tipo)}">${esc(b.interno)}</th>${F.map(d => { const f = b.d[d];
-      return f ? `<td class="c ${f[6] === "Operativo" ? "o" : "m"}" title="${fmtFecha(d)} · ${esc(f[5])} · ${esc(f[6])}${f[7] ? " · " + esc(f[7]) : ""}">${LETRA[f[5]] || ""}</td>` : `<td class="c n" title="${fmtFecha(d)} · sin dato"></td>`; }).join("")}<td class="d mono">${b.mt}</td></tr>`).join("") +
-    "</tbody></table>";
-}
-
-document.querySelectorAll(".tabs button").forEach(b => b.onclick = () => { vista = b.dataset.v; guardarPref("flota_dash", vista); pintar(); });
-$("dia").onchange = v1; $("h-tipo").onchange = v3; $("h-sol").onchange = v3;
+$("dia").onchange = v1;
 $("aplicar").onclick = () => cargar().catch(x => alert(x.message));
 ["desde", "hasta"].forEach(id => $(id).addEventListener("change", enlaces));
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => D && pintar());
