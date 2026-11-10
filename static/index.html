@@ -57,21 +57,42 @@
 fieldset[disabled] .seg button,fieldset[disabled] .chip{cursor:default}
 fieldset{border:0;padding:0;margin:0;min-width:0}
 @media (max-width:640px){.send{padding:8px 16px;gap:6px}.send .note{display:none}.send .btn{width:100%;justify-content:center}.send .row{width:100%}}
+
+/* Pantalla completa para la vista Por terminal */
+.wrap.ancha{max-width:none;gap:10px;padding-block:10px 0}
+.head{align-items:center;flex-wrap:nowrap}
+.head .tit{display:flex;flex-direction:column;flex:none}
+.head h1{font-size:1.15rem}
+.head .fecha{font-size:.88rem}
+.head #estado{flex:1 1 auto;padding:7px 12px;font-size:.84rem;min-width:0}
+.head .row{flex:none}
+.head label.f{flex-direction:row;align-items:center;gap:6px}
+.tools.card.pad{padding:8px 12px}
+@media (max-width:900px){.head{flex-wrap:wrap}.head #estado{flex-basis:100%;order:3}.head .row{flex:1 1 100%}.head label.f{flex-direction:column;align-items:stretch}.head input{min-width:0 !important;width:100%}}
+#vC{display:flex !important;gap:10px;align-items:stretch}
+#vC[hidden]{display:none !important}
+#vC .col{flex-basis:0;min-width:170px;min-height:calc(100vh - 250px)}
+#vC .chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(clamp(54px,4.2vw,84px),1fr));gap:clamp(4px,.4vw,8px);align-content:start;flex:1}
+#vC .chip{padding:clamp(5px,.55vw,11px) 0;text-align:center;font-size:clamp(.8rem,.95vw,1.08rem)}
+#vC .col h3{font-size:clamp(.95rem,1vw,1.15rem);flex-wrap:wrap}
+#vC .col h3 small{white-space:nowrap}
+@media (max-width:700px){#vC{flex-direction:column}#vC .col{flex:none !important;min-height:0;min-width:0}}
+.send{margin:0 -16px;padding:8px 16px}
 </style>
 </head>
 <body>
-<div class="wrap">
+<div class="wrap ancha">
   <section class="head">
-    <div>
+    <div class="tit">
       <h1>Reporte diario de distribución</h1>
       <div class="fecha" id="fecha"></div>
     </div>
+    <div id="estado" class="msg info" hidden></div>
     <div class="row">
       <label class="f">Encargado que envía<input id="encargado" maxlength="120" style="min-width:240px"></label>
       <label class="f" id="l-fecha" hidden>Fecha (administrador)<input type="date" id="sel-fecha"></label>
     </div>
   </section>
-  <div id="estado" class="msg info" hidden></div>
 
   <section class="card pad tools">
     <p class="note" id="desc" style="margin:0;flex:1 1 300px"></p>
@@ -107,7 +128,7 @@ fieldset{border:0;padding:0;margin:0;min-width:0}
 const DESC = {
   A: "Propuesta A: tabla igual a la hoja Base. Rápida en computador; cada fila se edita en línea con listas desplegables.",
   B: "Propuesta B: una tarjeta por bus con botón grande Operativo / Mantenimiento. Pensada para celular en el patio.",
-  C: "Arrastra un bus a otra terminal para moverlo. Doble click cambia Operativo / Mantenimiento. Un click abre el detalle (observación). En celular: mantén presionado y arrastra.",
+  C: "Arrastra un bus a otra terminal para moverlo. Doble click cambia Operativo / Mantenimiento. Un click abre el detalle (observación). En celular: mantén presionado y arrastra. Borde amarillo: cambió respecto al día anterior; punto: tiene observación.",
 };
 let yo, datos, filas = [], original = {}, vista = "C";  // interfaz elegida: C · Por terminal (A y B quedan en el historial de git)
 const $ = id => document.getElementById(id);
@@ -185,10 +206,10 @@ function pintar() {
   } else {
     $("vC").innerHTML = T.map(t => {
       const g = vs.filter(f => f.terminal_real === t), op = g.filter(f => f.operativo === "Operativo").length;
-      return `<section class="col" data-t="${esc(t)}"><h3>${esc(t)} <small>${op}/${g.length} operativos</small></h3>
+      return `<section class="col" data-t="${esc(t)}" style="flex-grow:${Math.max(g.length, 8)}"><h3>${esc(t)} <small>${op}/${g.length} operativos</small></h3>
         <div class="bar"><i style="width:${g.length ? op / g.length * 100 : 0}%"></i></div>
         <div class="chips">${g.map(f => `<button type="button" class="chip ${f.operativo === "Operativo" ? "ok" : "mt"} ${ch(f) ? "ch" : ""} ${f.observacion ? "obs" : ""}" data-i="${esc(f.interno)}" title="${esc(f.placa + " · " + f.tipo_bus + (f.observacion ? " · " + f.observacion : ""))}">${esc(f.interno)}</button>`).join("") || '<span class="note">Sin buses</span>'}</div></section>`;
-    }).join("") + `<p class="note leyenda" style="grid-column:1/-1"><span class="pill p-ok"><i></i>Operativo</span><span class="pill p-mt"><i></i>Mantenimiento</span><span>Arrastra un bus a otra terminal para moverlo · doble click cambia Operativo / Mantenimiento · un click abre el detalle · borde amarillo: cambió respecto al día anterior · punto: tiene observación</span></p>`;
+    }).join("");
   }
   resumen();
 }
