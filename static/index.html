@@ -90,7 +90,7 @@ fieldset{border:0;padding:0;margin:0;min-width:0}
     <div id="estado" class="msg info" hidden></div>
     <div class="row">
       <label class="f">Encargado que envía<input id="encargado" maxlength="120" style="min-width:240px"></label>
-      <label class="f" id="l-fecha" hidden>Fecha (administrador)<input type="date" id="sel-fecha"></label>
+      <label class="f" id="l-fecha" hidden>Fecha<input type="date" id="sel-fecha"></label>
     </div>
   </section>
 
@@ -149,7 +149,7 @@ async function cargar(fecha) {
     const r = datos.reporte;
     est.className = "msg ok";
     est.textContent = `Reporte enviado a las ${r.hora} por ${r.encargado}` + (r.modificado_por ? ` · corregido por ${r.modificado_por}` : "") +
-      (datos.puede_editar ? ". Como administrador puedes corregirlo." : ". Ya no se puede modificar; solo un administrador puede corregirlo.");
+      ". Puedes corregirlo y pulsar Guardar corrección.";
     $("encargado").value = r.encargado;
   } else {
     est.className = "msg info";
@@ -324,7 +324,7 @@ window.addEventListener("beforeunload", e => {
 (async () => {
   try {
     yo = await barra("/");
-    if (yo.rol === "admin") { $("l-fecha").hidden = false; }
+    $("l-fecha").hidden = false;
     $("sel-fecha").max = new Date().toISOString().slice(0, 10);
     await cargar();
   } catch (x) { $("estado").hidden = false; $("estado").className = "msg err"; $("estado").textContent = x.message; }

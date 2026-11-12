@@ -289,7 +289,7 @@ def api_reporte():
                    ORDER BY CASE WHEN interno ~ '^[0-9]+$' THEN interno::int END, interno""", (rep["id"],)
             ).fetchall()
             return jsonify(
-                fecha=fecha.isoformat(), existe=True, puede_editar=u["rol"] == "admin",
+                fecha=fecha.isoformat(), existe=True, puede_editar=True,
                 reporte={"hora": rep["hora"].strftime("%H:%M"), "encargado": rep["encargado"],
                          "registrado_por": rep["registrado_por"], "modificado_por": rep["modificado_por"]},
                 filas=[fila_json(f) for f in filas], terminales=TERMINALES, estados=ESTADOS,
@@ -318,7 +318,7 @@ def api_reporte():
         })
     return jsonify(
         fecha=fecha.isoformat(), existe=False,
-        puede_editar=fecha == hoy or u["rol"] == "admin",
+        puede_editar=True,
         prellenado_desde=ant["fecha"].isoformat() if ant else None,
         filas=filas, terminales=TERMINALES, estados=ESTADOS,
     )
@@ -333,8 +333,6 @@ def api_guardar_reporte():
     fecha = parse_fecha(d.get("fecha"), n.date())
     if fecha > n.date():
         return jsonify(error="No se puede reportar una fecha futura."), 400
-    if fecha != n.date() and u["rol"] != "admin":
-        return jsonify(error="Solo puedes enviar el reporte del día de hoy."), 403
     encargado = (d.get("encargado") or u["nombre"]).strip()[:120]
     entradas = {str(f.get("interno")): f for f in d.get("filas") or []}
     for f in entradas.values():
@@ -344,9 +342,6 @@ def api_guardar_reporte():
             return jsonify(error=f"Estado no válido en el bus {f.get('interno')}."), 400
     with conectar() as cx:
         rep = cx.execute("SELECT * FROM reportes WHERE fecha=%s FOR UPDATE", (fecha,)).fetchone()
-        if rep and u["rol"] != "admin":
-            return jsonify(error=f"El reporte de este día ya fue enviado por {rep['encargado']} a las "
-                                 f"{rep['hora'].strftime('%H:%M')}. Solo un administrador puede corregirlo."), 409
         buses = {b["interno"]: b for b in cx.execute("SELECT * FROM buses").fetchall()}
         faltan = [i for i in entradas if i not in buses]
         if faltan:

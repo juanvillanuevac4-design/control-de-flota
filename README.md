@@ -6,7 +6,7 @@ Registro diario de la distribución de la flota del depósito, basado en `Distru
 - **Un reporte por día**: tabla `reportes` (fecha única) y tabla `base` con las columnas de la hoja *Base*: Fecha, Hora, Encargado, PLACA, INTERNO, TIPO BUS, TIPO FLOTA, MARCA CHASIS, TERMINAL OP, Terminal Real, Operativo, Observacion.
 - **Prellenado**: al abrir el día, cada bus trae la Terminal Real, el estado y la observación del último reporte anterior. Solo se cambia lo que se movió.
 - **Listas**: Terminal Real = Pie Andino, Aguirre Luco, Juanita, Otro. Operativo = Operativo, Mantenimiento.
-- Un operador solo puede enviar el reporte de hoy, una vez. Un administrador puede corregir cualquier día (queda `modificado_por`).
+- Hay un solo reporte por fecha. Cualquier usuario puede crearlo o corregirlo (también días anteriores); queda `registrado_por` y `modificado_por`.
 
 ## Pantallas
 
