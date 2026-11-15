@@ -39,7 +39,7 @@ COLUMNAS_BASE = ["Fecha", "Hora", "Encargado", "PLACA", "INTERNO", "TIPO BUS", "
 COLUMNAS_CAMBIOS = ["Fecha y hora", "Fecha reporte", "Tipo", "Usuario", "Nombre", "PLACA", "INTERNO", "TIPO BUS",
                     "TIPO FLOTA", "MARCA CHASIS", "TERMINAL OP", "Terminal Real", "Operativo", "Motivo mantenimiento",
                     "Observacion"]
-MOTIVOS_INICIALES = ["Mecánica", "Eléctrica", "Carrocería", "Neumáticos", "Frenos", "Climatización",
+MOTIVOS_INICIALES = ["Mecánica", "Eléctrica", "Carrocería", "Neumáticos", "Frenos", "Climatización", "Aire acondicionado",
                      "Revisión técnica", "Siniestro", "Validador / Torniquete", "Otro"]
 CAMPOS = ("terminal_real", "operativo", "motivo", "observacion")
 
@@ -124,6 +124,7 @@ CREATE TABLE IF NOT EXISTS cambios (
 );
 CREATE INDEX IF NOT EXISTS cambios_interno_ts ON cambios (interno, ts DESC);
 CREATE INDEX IF NOT EXISTS cambios_ts ON cambios (ts);
+CREATE TABLE IF NOT EXISTS migraciones (nombre TEXT PRIMARY KEY, fecha TIMESTAMPTZ NOT NULL DEFAULT now());
 """
 
 app = Flask(__name__, static_folder="static")
@@ -169,6 +170,17 @@ def iniciar_bd():
                WHERE NOT EXISTS (SELECT 1 FROM cambios c WHERE c.fecha = b.fecha)""",
             (str(TZ),),
         )
+        # Una sola vez: observaciones escritas antes de existir el campo Motivo que son un motivo de la lista
+        # (solo buses en Mantenimiento) pasan al campo Motivo.
+        if cx.execute("INSERT INTO migraciones (nombre) VALUES ('obs_a_motivo') ON CONFLICT DO NOTHING RETURNING 1").fetchone():
+            for tabla in ("base", "cambios"):
+                n = cx.execute(
+                    f"""UPDATE {tabla} t SET motivo = m.nombre, observacion = ''
+                        FROM motivos m
+                        WHERE t.motivo = '' AND t.operativo = 'Mantenimiento'
+                          AND lower(trim(t.observacion)) = lower(m.nombre)"""
+                ).rowcount
+                app.logger.info("Migración obs_a_motivo: %s filas movidas en %s", n, tabla)
         hay_admin = cx.execute("SELECT 1 FROM usuarios WHERE rol='admin' AND activo").fetchone()
         if not hay_admin and ADMIN_CLAVE:
             cx.execute(
