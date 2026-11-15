@@ -1,6 +1,7 @@
 """Control de Flota: un reporte diario de la distribución de buses del depósito."""
 import csv
 import io
+import json
 import logging
 import os
 import re
@@ -11,7 +12,7 @@ from functools import wraps
 from zoneinfo import ZoneInfo
 
 import psycopg
-from flask import Flask, Response, jsonify, redirect, request, send_from_directory, session
+from flask import Flask, Response, g, jsonify, redirect, request, send_from_directory, session
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from psycopg.rows import dict_row
@@ -333,6 +334,54 @@ def requiere_escritura(f):
             return jsonify(error="Perfil invitado: los cambios no se guardan en la base de datos."), 403
         return f(*a, **k)
     return w
+
+
+def es_invitado():
+    u = usuario_actual()
+    return bool(u) and u["rol"] == "invitado"
+
+
+def mapa_ficticio():
+    """Interno y placa reales -> ficticios, para que el perfil invitado (demo pública) no vea la flota real.
+    Se asignan por orden de interno, así que el orden y los grupos se mantienen; el mapeo es el mismo en toda la app."""
+    if "mapa_ficticio" not in g:
+        with conectar() as cx:
+            buses = cx.execute(f"SELECT interno, placa FROM buses ORDER BY {ORDEN_INTERNO}").fetchall()
+        m = {}
+        for i, b in enumerate(buses):
+            m[b["interno"]] = str(1001 + i)
+            m[b["placa"]] = f"DM{i + 1:04d}"
+        patron = re.compile(r"(?<![0-9A-Za-z])(" + "|".join(sorted(map(re.escape, m), key=len, reverse=True)) + r")(?![0-9A-Za-z])") if m else None
+        g.mapa_ficticio = (m, patron)
+    return g.mapa_ficticio
+
+
+def ocultar(v):
+    """Reemplaza internos y placas reales por ficticios dentro de cualquier valor (texto, lista o dict)."""
+    if isinstance(v, str):
+        m, patron = mapa_ficticio()
+        return patron.sub(lambda x: m[x.group(1)], v) if patron else v
+    if isinstance(v, list):
+        return [ocultar(x) for x in v]
+    if isinstance(v, dict):
+        return {k: ocultar(x) for k, x in v.items()}
+    return v
+
+
+def interno_real(valor):
+    """Filtro escrito por el invitado (interno ficticio) -> interno real."""
+    if not es_invitado():
+        return valor
+    m, _ = mapa_ficticio()
+    inv = {f: r for r, f in m.items()}
+    return inv.get(valor, valor)
+
+
+@app.after_request
+def internos_ficticios_para_invitado(resp):
+    if resp.is_json and request.path.startswith("/api/") and es_invitado():
+        resp.set_data(json.dumps(ocultar(resp.get_json()), ensure_ascii=False))
+    return resp
 
 
 @app.before_request
@@ -708,7 +757,7 @@ def consulta_bitacora(cx, limite=None):
     if a.get("usuario"):
         cond.append("usuario = %s"); par.append(a["usuario"])
     if a.get("interno"):
-        cond.append("interno = %s"); par.append(a["interno"].strip().upper())
+        cond.append("interno = %s"); par.append(interno_real(a["interno"].strip().upper()))
     tipo = {"buses": "(accion IN ('Cambio de bus','Reporte del día creado','Cambio de encargado del reporte') OR accion LIKE 'Corrección%%')",
             "admin": "origen = 'Administración'", "sesion": "origen = 'Sesión'", "descargas": "origen = 'Descarga'"}.get(a.get("tipo"))
     if tipo:
@@ -763,6 +812,8 @@ def registrar_descarga(cx, que, fmt):
 
 
 def como_csv(columnas, filas, nombre):
+    if es_invitado():
+        filas = [[ocultar(v) for v in f] for f in filas]
     buf = io.StringIO()
     w = csv.writer(buf, delimiter=";")
     w.writerow(columnas)
@@ -773,6 +824,8 @@ def como_csv(columnas, filas, nombre):
 
 
 def como_xlsx(columnas, filas, nombre, hoja):
+    if es_invitado():
+        filas = [[ocultar(v) for v in f] for f in filas]
     wb = Workbook()
     ws = wb.active
     ws.title = hoja
