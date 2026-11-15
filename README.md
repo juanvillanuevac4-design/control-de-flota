@@ -17,6 +17,7 @@ Registro diario de la distribución de la flota del depósito, basado en `Distru
 
 - `/` Reporte diario en vista **Por terminal** (propuesta C elegida; las propuestas A Tabla y B Tarjetas quedan en el historial de git).
 - `/dashboard` Descarga (Excel o CSV por rango de fechas) y dashboard **Foto del día** con etiquetas de datos (propuestas 2 y 3 en el historial de git).
+- `/legal` Política de privacidad, términos de uso y aviso de tratamiento (públicos; fuente en `docs/legal/`, borradores para revisión de un abogado).
 - `/admin` Usuarios y contraseñas (crear, cambiar rol, activar/desactivar, cambiar clave) y nómina de buses.
 
 ## Configuración (Render)

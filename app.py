@@ -1,5 +1,6 @@
 """Control de Flota: un reporte diario de la distribución de buses del depósito."""
 import csv
+import html
 import io
 import logging
 import os
@@ -968,6 +969,68 @@ def error(e):
         return jsonify(error=e.description), e.code
     app.logger.exception("Error en %s", request.path)
     return jsonify(error="Error del servidor: " + type(e).__name__), 500
+
+
+# Textos legales (docs/legal/*.md), públicos: se leen antes de ingresar.
+LEGAL_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "docs", "legal")
+LEGAL_DOCS = {"privacidad": "politica-privacidad.md", "terminos": "terminos-uso.md", "aviso": "aviso-tratamiento.md"}
+
+
+def _md_linea(t):
+    t = html.escape(t)
+    t = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", t)
+    t = re.sub(r"\*(.+?)\*", r"<em>\1</em>", t)
+    t = re.sub(r"`(.+?)`", r"<code>\1</code>", t)
+    inv = {v: k for k, v in LEGAL_DOCS.items()}
+    return re.sub(r"\[(.+?)\]\((.+?)\)", lambda m: '<a href="/legal/%s">%s</a>' % (inv.get(m.group(2), ""), m.group(1)), t)
+
+
+def md_a_html(texto):
+    """Markdown mínimo: títulos, citas, listas, tablas y párrafos."""
+    out, bloque = [], None
+    for linea in texto.splitlines() + [""]:
+        tipo = ("h" if linea.startswith("#") else "q" if linea.startswith(">") else "li" if linea.startswith("- ")
+                else "tr" if linea.startswith("|") else "" if not linea.strip() else "p")
+        if tipo != bloque and bloque in ("li", "tr", "p"):
+            out.append({"li": "</ul>", "tr": "</table>", "p": "</p>"}[bloque])
+        if tipo != bloque and tipo in ("li", "tr", "p"):
+            out.append({"li": "<ul>", "tr": "<table>", "p": "<p>"}[tipo])
+        if tipo == "h":
+            n = len(linea) - len(linea.lstrip("#"))
+            out.append("<h%d>%s</h%d>" % (n, _md_linea(linea[n:].strip()), n))
+        elif tipo == "q":
+            out.append('<p class="aviso">%s</p>' % _md_linea(linea[1:].strip()))
+        elif tipo == "li":
+            out.append("<li>%s</li>" % _md_linea(linea[2:]))
+        elif tipo == "tr":
+            celdas = [c.strip() for c in linea.strip().strip("|").split("|")]
+            if not all(re.fullmatch(r":?-+:?", c) for c in celdas):
+                tag = "th" if out[-1] == "<table>" else "td"
+                out.append("<tr>%s</tr>" % "".join("<%s>%s</%s>" % (tag, _md_linea(c), tag) for c in celdas))
+        elif tipo == "p":
+            out.append(_md_linea(linea) + " ")
+        bloque = tipo
+    return "".join(out)
+
+
+@app.get("/legal")
+@app.get("/legal/<doc>")
+def legal(doc="privacidad"):
+    if doc not in LEGAL_DOCS:
+        return redirect("/legal")
+    with open(os.path.join(LEGAL_DIR, LEGAL_DOCS[doc]), encoding="utf-8") as f:
+        cuerpo = md_a_html(f.read())
+    nav = " · ".join('<a href="/legal/%s">%s</a>' % (k, t) for k, t in
+                     (("privacidad", "Privacidad"), ("terminos", "Términos de uso"), ("aviso", "Aviso de tratamiento")))
+    pagina_html = """<!doctype html><html lang="es"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1"><title>Textos legales · Control de Flota</title>
+<link rel="stylesheet" href="/static/base.css"><style>
+.doc{max-width:760px;margin:0 auto;padding:24px 16px 48px}.doc h1{font-size:1.4rem;margin:16px 0 8px}
+.doc h2{font-size:1.05rem;margin:22px 0 6px}.doc table{border-collapse:collapse;width:100%;display:block;overflow-x:auto;font-size:.9rem}
+.doc th,.doc td{border:1px solid var(--line);padding:6px 8px;text-align:left;vertical-align:top}
+.doc .aviso{background:var(--warn-bg);padding:8px 12px;border-radius:6px}.doc a{color:var(--accent)}
+</style></head><body><main class="doc"><p class="note">{nav} · <a href="/">Volver a la app</a></p>{cuerpo}</main></body></html>"""
+    return Response(pagina_html.replace("{nav}", nav).replace("{cuerpo}", cuerpo), mimetype="text/html")
 
 
 @app.get("/healthz")
