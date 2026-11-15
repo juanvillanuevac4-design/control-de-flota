@@ -181,6 +181,23 @@ def iniciar_bd():
                           AND lower(trim(t.observacion)) = lower(m.nombre)"""
                 ).rowcount
                 app.logger.info("Migración obs_a_motivo: %s filas movidas en %s", n, tabla)
+        # Una sola vez: lo mismo, pero sin importar el estado (el usuario pidió que el dato quede siempre en Motivo).
+        if cx.execute("INSERT INTO migraciones (nombre) VALUES ('obs_a_motivo_todos') ON CONFLICT DO NOTHING RETURNING 1").fetchone():
+            for tabla in ("base", "cambios"):
+                filas = cx.execute(
+                    f"""UPDATE {tabla} t SET motivo = m.nombre, observacion = ''
+                        FROM motivos m
+                        WHERE t.motivo = '' AND lower(trim(t.observacion)) = lower(m.nombre)
+                        RETURNING t.fecha, t.interno, t.operativo, m.nombre"""
+                ).fetchall()
+                app.logger.info("Migración obs_a_motivo_todos: %s filas movidas en %s: %s", len(filas), tabla,
+                                "; ".join(f"{f['fecha']} {f['interno']} {f['operativo']} -> {f['nombre']}" for f in filas[:40]))
+            resto = cx.execute(
+                """SELECT fecha, interno, operativo, observacion FROM base WHERE observacion <> ''
+                   ORDER BY fecha DESC, interno LIMIT 40"""
+            ).fetchall()
+            app.logger.info("Observaciones que quedan: %s", "; ".join(
+                f"{f['fecha']} {f['interno']} {f['operativo']}: {f['observacion']}" for f in resto) or "ninguna")
         hay_admin = cx.execute("SELECT 1 FROM usuarios WHERE rol='admin' AND activo").fetchone()
         if not hay_admin and ADMIN_CLAVE:
             cx.execute(
