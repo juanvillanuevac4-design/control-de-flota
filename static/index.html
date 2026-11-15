@@ -8,76 +8,43 @@
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
 <link rel="stylesheet" href="/static/base.css">
 <style>
-.head{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-end;justify-content:space-between}
-.head h1{font-size:1.45rem;font-weight:800}
-.head .fecha{font:600 1rem var(--f-mono)}
-.sum{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-.tools{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;justify-content:space-between}
-.tools .row{align-items:center}
-.cambio{box-shadow:inset 3px 0 0 var(--warn)}
-.send{position:sticky;bottom:0;z-index:10;background:var(--surface);border-top:1px solid var(--line);margin:0 -16px -48px;padding:12px 16px;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
-
-/* A · Tabla */
-#vA td select,#vA td input{width:100%}
-#vA td.obs{min-width:180px}
-#vA tr.mt td:first-child{box-shadow:inset 3px 0 0 var(--mt)}
-#vA tr.ok td:first-child{box-shadow:inset 3px 0 0 var(--ok)}
-
-/* B · Tarjetas */
-#vB{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px}
-.bus{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px 12px;display:flex;flex-direction:column;gap:8px;border-top:4px solid var(--ok)}
-.bus.mt{border-top-color:var(--mt)}
-.bus .t{display:flex;justify-content:space-between;align-items:baseline;gap:8px}
-.bus .t b{font:700 1.3rem var(--f-mono)}
-.bus .t span{font-size:.78rem;color:var(--muted)}
-.seg{display:grid;grid-template-columns:1fr 1fr;border:1px solid var(--line);border-radius:8px;overflow:hidden}
-.seg button{border:0;background:var(--surface2);color:var(--muted);font:700 .8rem var(--f-display);padding:8px 4px;cursor:pointer}
-.seg button.on.o{background:var(--ok);color:#fff}
-.seg button.on.m{background:var(--mt);color:#fff}
-.bus input{width:100%}
-.bus select{width:100%}
-
-/* C · Por terminal */
-#vC{display:grid;grid-template-columns:repeat(auto-fit,minmax(250px,1fr));gap:12px}
-.col{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:8px;min-height:120px}
-.col h3{font-size:.95rem;display:flex;justify-content:space-between;align-items:center;gap:8px}
-.col h3 small{font:500 .8rem var(--f-mono);color:var(--muted)}
-.col .bar{height:6px;border-radius:3px;background:var(--mt-bg);overflow:hidden}
-.col .bar i{display:block;height:100%;background:var(--ok)}
-.chips{display:flex;flex-wrap:wrap;gap:6px}
-.chip{font:600 .82rem var(--f-mono);border-radius:7px;padding:5px 8px;cursor:grab;border:1px solid transparent;touch-action:manipulation;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
-.chip.arrastrando{opacity:.35}
-.fantasma{position:fixed;z-index:50;pointer-events:none;transform:translate(-50%,-50%) scale(1.15);box-shadow:0 6px 18px rgb(0 0 0 / .25)}
-.col.destino{outline:2px dashed var(--accent);outline-offset:-2px;background:var(--accent-bg)}
-.chip.ok{background:var(--ok-bg);color:var(--ok)}
-.chip.mt{background:var(--mt-bg);color:var(--mt)}
-.chip.ch{border-color:var(--warn)}
-.chip.obs::after{content:"•";margin-left:3px}
-.leyenda{display:flex;gap:12px;flex-wrap:wrap;font-size:.8rem;color:var(--muted)}
-fieldset[disabled] .seg button,fieldset[disabled] .chip{cursor:default}
-fieldset{border:0;padding:0;margin:0;min-width:0}
-@media (max-width:640px){.send{padding:8px 16px;gap:6px}.send .note{display:none}.send .btn{width:100%;justify-content:center}.send .row{width:100%}}
-
-/* Pantalla completa para la vista Por terminal */
 .wrap.ancha{max-width:none;gap:10px;padding-block:10px 0}
-.head{align-items:center;flex-wrap:nowrap}
+.head{display:flex;gap:12px 24px;align-items:center;justify-content:space-between;flex-wrap:nowrap}
 .head .tit{display:flex;flex-direction:column;flex:none}
-.head h1{font-size:1.15rem}
-.head .fecha{font-size:.88rem}
+.head h1{font-size:1.15rem;font-weight:800}
+.head .fecha{font:600 .88rem var(--f-mono)}
 .head #estado{flex:1 1 auto;padding:7px 12px;font-size:.84rem;min-width:0}
 .head .row{flex:none}
 .head label.f{flex-direction:row;align-items:center;gap:6px}
-.tools.card.pad{padding:8px 12px}
 @media (max-width:900px){.head{flex-wrap:wrap}.head #estado{flex-basis:100%;order:3}.head .row{flex:1 1 100%}.head label.f{flex-direction:column;align-items:stretch}.head input{min-width:0 !important;width:100%}}
-#vC{display:flex !important;gap:10px;align-items:stretch}
-#vC[hidden]{display:none !important}
-#vC .col{flex-basis:0;min-width:170px;min-height:calc(100vh - 250px)}
-#vC .chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(clamp(54px,4.2vw,84px),1fr));gap:clamp(4px,.4vw,8px);align-content:start;flex:1}
-#vC .chip{padding:clamp(5px,.55vw,11px) 0;text-align:center;font-size:clamp(.8rem,.95vw,1.08rem)}
-#vC .col h3{font-size:clamp(.95rem,1vw,1.15rem);flex-wrap:wrap}
-#vC .col h3 small{white-space:nowrap}
-@media (max-width:700px){#vC{flex-direction:column}#vC .col{flex:none !important;min-height:0;min-width:0}}
-.send{margin:0 -16px;padding:8px 16px}
+.tools{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:center;justify-content:space-between}
+.tools.card.pad{padding:8px 12px}
+.tools .row{align-items:center}
+.invitado{background:var(--warn-bg);color:var(--warn);font-weight:700}
+.sum{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+.send{position:sticky;bottom:0;z-index:10;background:var(--surface);border-top:1px solid var(--line);margin:0 -16px;padding:8px 16px;display:flex;gap:12px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+@media (max-width:640px){.send{gap:6px}.send .btn{width:100%;justify-content:center}.send .row{width:100%}}
+#guardado.pend{color:var(--warn);font-weight:700} #guardado.err{color:var(--mt);font-weight:700} #guardado.ok{color:var(--ok)}
+
+#vC{display:flex;gap:10px;align-items:stretch}
+.col{background:var(--surface);border:1px solid var(--line);border-radius:12px;padding:10px;display:flex;flex-direction:column;gap:8px;flex-basis:0;min-width:170px;min-height:calc(100vh - 250px)}
+.col h3{font-size:clamp(.95rem,1vw,1.15rem);display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap}
+.col h3 small{font:500 .8rem var(--f-mono);color:var(--muted);white-space:nowrap}
+.col .bar{height:6px;border-radius:3px;background:var(--mt-bg);overflow:hidden}
+.col .bar i{display:block;height:100%;background:var(--ok)}
+.col.destino{outline:2px dashed var(--accent);outline-offset:-2px;background:var(--accent-bg)}
+.chips{display:grid;grid-template-columns:repeat(auto-fill,minmax(clamp(54px,4.2vw,84px),1fr));gap:clamp(4px,.4vw,8px);align-content:start;flex:1}
+.chip{font:600 clamp(.8rem,.95vw,1.08rem) var(--f-mono);border-radius:7px;padding:clamp(5px,.55vw,11px) 0;text-align:center;cursor:grab;border:1px solid transparent;touch-action:manipulation;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+.chip.ok{background:var(--ok-bg);color:var(--ok)}
+.chip.mt{background:var(--mt-bg);color:var(--mt)}
+.chip.ch{border-color:var(--warn)}
+.chip.pend{border-style:dashed;border-color:var(--accent)}
+.chip.obs::after{content:"•";margin-left:3px}
+.chip.arrastrando{opacity:.35}
+.fantasma{position:fixed;z-index:50;pointer-events:none;transform:translate(-50%,-50%) scale(1.15);box-shadow:0 6px 18px rgb(0 0 0 / .25)}
+@media (max-width:700px){#vC{flex-direction:column}.col{flex:none !important;min-height:0;min-width:0}}
+#dlg form{display:flex;flex-direction:column;gap:10px;min-width:min(320px,calc(100vw - 72px))}
+#dlg .hist{font-size:.8rem;color:var(--muted);margin:0}
 </style>
 </head>
 <body>
@@ -89,13 +56,13 @@ fieldset{border:0;padding:0;margin:0;min-width:0}
     </div>
     <div id="estado" class="msg info" hidden></div>
     <div class="row">
-      <label class="f">Encargado que envía<input id="encargado" maxlength="120" style="min-width:240px"></label>
-      <label class="f" id="l-fecha" hidden>Fecha<input type="date" id="sel-fecha"></label>
+      <label class="f">Encargado<input id="encargado" maxlength="120" style="min-width:220px"></label>
+      <label class="f">Fecha<input type="date" id="sel-fecha"></label>
     </div>
   </section>
 
   <section class="card pad tools">
-    <p class="note" id="desc" style="margin:0;flex:1 1 300px"></p>
+    <p class="note" id="desc" style="margin:0;flex:1 1 300px">Arrastra un bus a otra terminal para moverlo. Doble click cambia Operativo / Mantenimiento. Un click abre el detalle (motivo y observación). En celular: mantén presionado y arrastra. Cada cambio se guarda solo. Borde amarillo: cambió hoy; punto: tiene observación.</p>
     <div class="row">
       <input type="search" id="buscar" placeholder="Buscar interno o placa" aria-label="Buscar">
       <select id="f-tipo" aria-label="Tipo de bus"><option value="">Todos los tipos</option></select>
@@ -103,66 +70,61 @@ fieldset{border:0;padding:0;margin:0;min-width:0}
     </div>
   </section>
 
-  <fieldset id="fs">
-    <div id="vA" class="card scroll" hidden></div>
-    <div id="vB" hidden></div>
-    <div id="vC" hidden></div>
-  </fieldset>
+  <div id="vC"></div>
 
   <div class="send">
     <div class="sum" id="sum"></div>
-    <div class="row" style="align-items:center"><span class="note" id="cambios"></span><button class="btn" id="enviar">Enviar reporte del día</button></div>
+    <div class="row" style="align-items:center"><span class="note" id="guardado"></span><button class="btn" id="enviar">Guardar corrección</button></div>
   </div>
 </div>
 
-<dialog id="dlg"><form method="dialog" style="display:flex;flex-direction:column;gap:10px">
+<dialog id="dlg"><form method="dialog">
   <h3 id="d-t"></h3><p class="note" id="d-s"></p>
   <label class="f">Terminal Real<select id="d-term"></select></label>
   <label class="f">Estado<select id="d-est"></select></label>
+  <label class="f" id="l-mot" hidden>Motivo de mantenimiento<select id="d-mot"></select></label>
   <label class="f">Observación<input id="d-obs" maxlength="500"></label>
-  <div class="row"><button class="btn" value="ok">Aplicar</button><button class="btn sec" value="cancel">Cancelar</button></div>
+  <p class="hist" id="d-h"></p>
+  <div class="row"><button class="btn" value="ok">Aplicar y guardar</button><button class="btn sec" value="cancel" formnovalidate>Cancelar</button></div>
 </form></dialog>
 
 <script src="/static/comun.js"></script>
 <script>
-const DESC = {
-  A: "Propuesta A: tabla igual a la hoja Base. Rápida en computador; cada fila se edita en línea con listas desplegables.",
-  B: "Propuesta B: una tarjeta por bus con botón grande Operativo / Mantenimiento. Pensada para celular en el patio.",
-  C: "Arrastra un bus a otra terminal para moverlo. Doble click cambia Operativo / Mantenimiento. Un click abre el detalle (observación). En celular: mantén presionado y arrastra. Borde amarillo: cambió respecto al día anterior; punto: tiene observación.",
-};
-let yo, datos, filas = [], original = {}, vista = "C";  // interfaz elegida: C · Por terminal (A y B quedan en el historial de git)
+let yo, datos, filas = [], guardado = {}, tGuardar, guardando = false, encargadoGuardado = "";
 const $ = id => document.getElementById(id);
-const llave = f => f.terminal_real + "|" + f.operativo + "|" + (f.observacion || "");
+const CAMPOS = ["terminal_real", "operativo", "motivo", "observacion"];
+const llave = f => CAMPOS.map(c => f[c] || "").join("|");
 const opts = (lista, v) => lista.map(o => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("");
+const pendientes = () => filas.filter(f => guardado[f.interno] !== llave(f));
+const invitado = () => yo && yo.rol === "invitado";
+
+function aviso(texto, clase) { const e = $("estado"); e.hidden = false; e.className = "msg " + clase; e.textContent = texto; }
 
 async function cargar(fecha) {
   datos = await api("/api/reporte" + (fecha ? "?fecha=" + fecha : ""));
   filas = datos.filas;
-  original = Object.fromEntries(filas.map(f => [f.interno, llave(f)]));
+  guardado = Object.fromEntries(filas.map(f => [f.interno, llave(f)]));
   $("fecha").textContent = diaSemana(datos.fecha) + " " + fmtFecha(datos.fecha);
   $("sel-fecha").value = datos.fecha;
   const tipos = [...new Set(filas.map(f => f.tipo_bus))].sort();
-  $("f-tipo").innerHTML = '<option value="">Todos los tipos</option>' + tipos.map(t => `<option>${esc(t)}</option>`).join("");
-  const est = $("estado");
-  est.hidden = false;
+  const t = $("f-tipo").value;
+  $("f-tipo").innerHTML = '<option value="">Todos los tipos</option>' + tipos.map(x => `<option ${x === t ? "selected" : ""}>${esc(x)}</option>`).join("");
+  $("encargado").value = datos.existe ? datos.reporte.encargado : yo.nombre;
+  encargadoGuardado = datos.existe ? datos.reporte.encargado : "";
+  mensajeEstado();
+  pintar();
+}
+
+function mensajeEstado() {
+  if (invitado()) return aviso("Perfil invitado: puedes probar todo, pero tus cambios no se guardan en la base de datos.", "warn invitado");
   if (datos.existe) {
     const r = datos.reporte;
-    est.className = "msg ok";
-    est.textContent = `Reporte enviado a las ${r.hora} por ${r.encargado}` + (r.modificado_por ? ` · corregido por ${r.modificado_por}` : "") +
-      ". Puedes corregirlo y pulsar Guardar corrección.";
-    $("encargado").value = r.encargado;
+    aviso(`Reporte iniciado a las ${r.hora} por ${r.encargado}` + (r.ultimo_cambio ? ` · último cambio ${r.ultimo_cambio}` : "") + ". Cada cambio se guarda automáticamente.", "ok");
   } else {
-    est.className = "msg info";
-    est.textContent = datos.prellenado_desde
-      ? `Datos prellenados con el reporte del ${diaSemana(datos.prellenado_desde)} ${fmtFecha(datos.prellenado_desde)}. Cambia solo lo que se movió y envía.`
-      : "Primer reporte: datos prellenados con la distribución del Excel (Patio Real / Observación).";
-    $("encargado").value = yo.nombre;
+    aviso(datos.prellenado_desde
+      ? `Datos tomados del ${diaSemana(datos.prellenado_desde)} ${fmtFecha(datos.prellenado_desde)}. Al primer cambio (o con Guardar corrección) se crea el reporte de este día.`
+      : "Primer reporte: datos tomados del Excel. Al primer cambio se crea el reporte de este día.", "info");
   }
-  $("fs").disabled = !datos.puede_editar;
-  $("encargado").disabled = !datos.puede_editar;
-  $("enviar").hidden = !datos.puede_editar;
-  $("enviar").textContent = datos.existe ? "Guardar corrección" : "Enviar reporte del día";
-  pintar();
 }
 
 function visibles() {
@@ -172,57 +134,73 @@ function visibles() {
 
 function resumen() {
   const op = filas.filter(f => f.operativo === "Operativo").length, mt = filas.length - op;
-  const ch = filas.filter(f => original[f.interno] !== llave(f)).length;
   $("sum").innerHTML = `<span class="pill p-info">${filas.length} buses</span><span class="pill p-ok"><i></i>${op} operativos</span><span class="pill p-mt"><i></i>${mt} en mantenimiento</span>`;
-  $("cambios").textContent = ch ? `${ch} cambio${ch > 1 ? "s" : ""} respecto al día anterior` : "Sin cambios respecto al día anterior";
-}
-
-function cambiar(interno, campo, valor) {
-  const f = filas.find(x => x.interno === interno);
-  f[campo] = valor;
-  if (campo === "observacion") { resumen(); return; }  // sin repintar, para no perder el foco
-  pintar();
+  const n = pendientes().length, g = $("guardado");
+  if (guardando) { g.className = "note pend"; g.textContent = "Guardando…"; }
+  else if (n) { g.className = "note pend"; g.textContent = `${n} cambio${n > 1 ? "s" : ""} por guardar`; }
+  else if (!g.classList.contains("err") && !g.textContent.startsWith("Guardado")) {
+    g.className = "note ok"; g.textContent = invitado() ? "Invitado: cambios solo en tu pantalla" : (datos.existe ? "Todo guardado" : "Sin cambios");
+  }
 }
 
 function pintar() {
-  ["A", "B", "C"].forEach(v => $("v" + v).hidden = v !== vista);
-  $("desc").textContent = DESC[vista];
-  const vs = visibles(), T = datos.terminales, E = datos.estados;
-  const ch = f => original[f.interno] !== llave(f);
-  if (vista === "A") {
-    $("vA").innerHTML = `<table><thead><tr><th>Placa</th><th>Interno</th><th>Tipo bus</th><th>Tipo flota</th><th>Marca chasis</th><th>Terminal OP</th><th>Terminal Real</th><th>Operativo</th><th>Observación</th></tr></thead><tbody>` +
-      vs.map(f => `<tr class="${f.operativo === "Operativo" ? "ok" : "mt"} ${ch(f) ? "cambio" : ""}" data-i="${esc(f.interno)}">
-        <td class="mono">${esc(f.placa)}</td><td class="mono"><b>${esc(f.interno)}</b></td><td>${esc(f.tipo_bus)}</td><td>${esc(f.tipo_flota)}</td><td>${esc(f.marca_chasis)}</td><td>${esc(f.terminal_op)}</td>
-        <td><select data-c="terminal_real" aria-label="Terminal Real ${esc(f.interno)}">${opts(T, f.terminal_real)}</select></td>
-        <td><select data-c="operativo" aria-label="Estado ${esc(f.interno)}">${opts(E, f.operativo)}</select></td>
-        <td class="obs"><input data-c="observacion" value="${esc(f.observacion)}" maxlength="500" aria-label="Observación ${esc(f.interno)}"></td></tr>`).join("") +
-      `</tbody></table>`;
-  } else if (vista === "B") {
-    $("vB").innerHTML = vs.map(f => `<article class="bus ${f.operativo === "Operativo" ? "" : "mt"} ${ch(f) ? "cambio" : ""}" data-i="${esc(f.interno)}">
-      <div class="t"><b>${esc(f.interno)}</b><span>${esc(f.placa)} · ${esc(f.tipo_bus)} · ${esc(f.marca_chasis)}</span></div>
-      <div class="seg"><button type="button" class="o ${f.operativo === "Operativo" ? "on" : ""}" data-e="Operativo">Operativo</button><button type="button" class="m ${f.operativo === "Mantenimiento" ? "on" : ""}" data-e="Mantenimiento">Mantenimiento</button></div>
-      <select data-c="terminal_real" aria-label="Terminal Real">${opts(T, f.terminal_real)}</select>
-      <input data-c="observacion" value="${esc(f.observacion)}" placeholder="Observación" maxlength="500"></article>`).join("") || '<p class="note">Sin buses con ese filtro.</p>';
-  } else {
-    $("vC").innerHTML = T.map(t => {
-      const g = vs.filter(f => f.terminal_real === t), op = g.filter(f => f.operativo === "Operativo").length;
-      return `<section class="col" data-t="${esc(t)}" style="flex-grow:${Math.max(g.length, 8)}"><h3>${esc(t)} <small>${op}/${g.length} operativos</small></h3>
-        <div class="bar"><i style="width:${g.length ? op / g.length * 100 : 0}%"></i></div>
-        <div class="chips">${g.map(f => `<button type="button" class="chip ${f.operativo === "Operativo" ? "ok" : "mt"} ${ch(f) ? "ch" : ""} ${f.observacion ? "obs" : ""}" data-i="${esc(f.interno)}" title="${esc(f.placa + " · " + f.tipo_bus + (f.observacion ? " · " + f.observacion : ""))}">${esc(f.interno)}</button>`).join("") || '<span class="note">Sin buses</span>'}</div></section>`;
-    }).join("");
-  }
+  const vs = visibles(), pend = new Set(pendientes().map(f => f.interno));
+  $("vC").innerHTML = datos.terminales.map(t => {
+    const g = vs.filter(f => f.terminal_real === t), op = g.filter(f => f.operativo === "Operativo").length;
+    return `<section class="col" data-t="${esc(t)}" style="flex-grow:${Math.max(g.length, 8)}"><h3>${esc(t)} <small>${op}/${g.length} operativos</small></h3>
+      <div class="bar"><i style="width:${g.length ? op / g.length * 100 : 0}%"></i></div>
+      <div class="chips">${g.map(f => {
+        const tip = [f.placa, f.tipo_bus, f.operativo === "Mantenimiento" && f.motivo ? "Motivo: " + f.motivo : "", f.observacion,
+          f.cambio_ts && f.cambio_ts !== "local" ? `Cambió ${f.cambio_ts} (${f.cambio_por})` : ""].filter(Boolean).join(" · ");
+        return `<button type="button" class="chip ${f.operativo === "Operativo" ? "ok" : "mt"} ${f.cambio_ts ? "ch" : ""} ${pend.has(f.interno) ? "pend" : ""} ${f.observacion ? "obs" : ""}" data-i="${esc(f.interno)}" title="${esc(tip)}">${esc(f.interno)}</button>`;
+      }).join("") || '<span class="note">Sin buses</span>'}</div></section>`;
+  }).join("");
   resumen();
 }
 
-// Eventos (delegados)
-document.addEventListener("change", e => {
-  const c = e.target.dataset.c, tr = e.target.closest("[data-i]");
-  if (c && tr) cambiar(tr.dataset.i, c, e.target.value);
-});
-$("vB").addEventListener("click", e => {
-  const b = e.target.closest("button[data-e]");
-  if (b && !$("fs").disabled) cambiar(b.closest("[data-i]").dataset.i, "operativo", b.dataset.e);
-});
+// ---- Guardado automático: cada cambio se envía al servidor (solo los buses que cambiaron).
+function cambiar(interno, valores) {
+  const f = filas.find(x => x.interno === interno);
+  Object.assign(f, valores);
+  if (f.operativo !== "Mantenimiento") f.motivo = "";
+  $("guardado").textContent = "";
+  pintar();
+  programarGuardado(150);
+}
+function programarGuardado(ms) { clearTimeout(tGuardar); tGuardar = setTimeout(guardar, ms); }
+
+async function guardar(forzar) {
+  if (guardando) return programarGuardado(400);
+  const pend = pendientes(), enc = $("encargado").value.trim();
+  if (!enc) { $("guardado").className = "note err"; $("guardado").textContent = "Escribe el nombre del encargado."; return; }
+  if (!pend.length && forzar !== true && enc === encargadoGuardado) return resumen();
+  if (invitado()) {
+    pend.forEach(f => { guardado[f.interno] = llave(f); f.cambio_ts = "local"; f.cambio_por = yo.nombre; });
+    pintar(); return;
+  }
+  guardando = true; resumen();
+  const envio = pend.map(f => ({interno: f.interno, terminal_real: f.terminal_real, operativo: f.operativo, motivo: f.motivo, observacion: f.observacion}));
+  const llaves = Object.fromEntries(pend.map(f => [f.interno, llave(f)]));
+  try {
+    const r = await api("/api/reporte", {fecha: datos.fecha, encargado: enc, filas: envio});
+    Object.assign(guardado, llaves);
+    pend.forEach(f => { if (llave(f) === llaves[f.interno]) { f.cambio_ts = r.hora; f.cambio_por = yo.nombre; } });
+    encargadoGuardado = enc;
+    if (!datos.existe) { datos.existe = true; datos.reporte = {hora: r.hora, encargado: enc}; }
+    datos.reporte.ultimo_cambio = r.hora; datos.reporte.encargado = enc;
+    mensajeEstado();
+    $("guardado").className = "note ok"; $("guardado").textContent = `Guardado ${r.hora}`;
+  } catch (x) {
+    $("guardado").className = "note err"; $("guardado").textContent = "No se guardó: " + x.message;
+  }
+  guardando = false;
+  pintar();
+  if (pendientes().length && !$("guardado").classList.contains("err")) programarGuardado(800);
+}
+$("enviar").onclick = () => { $("guardado").textContent = ""; guardar(true); };
+$("encargado").addEventListener("change", () => datos.existe && guardar());
+
+// ---- Detalle (un click) y cambio de estado (doble click)
 let editando, tClick, arrastre = null, sinClick = false;
 function abrirDetalle(interno) {
   editando = filas.find(f => f.interno === interno);
@@ -230,13 +208,22 @@ function abrirDetalle(interno) {
   $("d-s").textContent = `${editando.placa} · ${editando.tipo_bus} · ${editando.tipo_flota} · ${editando.marca_chasis}`;
   $("d-term").innerHTML = opts(datos.terminales, editando.terminal_real);
   $("d-est").innerHTML = opts(datos.estados, editando.operativo);
+  const mot = !editando.motivo || datos.motivos.includes(editando.motivo) ? datos.motivos : [editando.motivo, ...datos.motivos];
+  $("d-mot").innerHTML = '<option value="">(sin motivo)</option>' + opts(mot, editando.motivo);
+  $("l-mot").hidden = editando.operativo !== "Mantenimiento";
   $("d-obs").value = editando.observacion || "";
+  $("d-h").textContent = editando.cambio_ts && editando.cambio_ts !== "local" ? `Último cambio: ${editando.cambio_ts} por ${editando.cambio_por}` : "";
   $("dlg").showModal();
 }
-// Un click abre el detalle (espera un instante por si es doble click); doble click alterna el estado.
+$("d-est").onchange = () => { $("l-mot").hidden = $("d-est").value !== "Mantenimiento"; };
+$("dlg").addEventListener("close", () => {
+  if ($("dlg").returnValue !== "ok" || !editando) return;
+  cambiar(editando.interno, {terminal_real: $("d-term").value, operativo: $("d-est").value,
+    motivo: $("d-est").value === "Mantenimiento" ? $("d-mot").value : "", observacion: $("d-obs").value.trim()});
+});
 $("vC").addEventListener("click", e => {
   const b = e.target.closest(".chip");
-  if (!b || $("fs").disabled) return;
+  if (!b) return;
   if (sinClick) { sinClick = false; return; }
   clearTimeout(tClick);
   if (e.detail > 1) return;
@@ -244,15 +231,16 @@ $("vC").addEventListener("click", e => {
 });
 $("vC").addEventListener("dblclick", e => {
   const b = e.target.closest(".chip");
-  if (!b || $("fs").disabled) return;
+  if (!b) return;
   clearTimeout(tClick);
   const f = filas.find(x => x.interno === b.dataset.i);
-  cambiar(f.interno, "operativo", f.operativo === "Operativo" ? "Mantenimiento" : "Operativo");
+  cambiar(f.interno, {operativo: f.operativo === "Operativo" ? "Mantenimiento" : "Operativo"});
 });
-// Arrastrar: con mouse al mover; en pantalla táctil, manteniendo presionado medio segundo.
+
+// ---- Arrastrar: con mouse al mover; en pantalla táctil, manteniendo presionado medio segundo.
 $("vC").addEventListener("pointerdown", e => {
   const b = e.target.closest(".chip");
-  if (!b || $("fs").disabled || e.button > 0) return;
+  if (!b || e.button > 0) return;
   arrastre = {b, x: e.clientX, y: e.clientY, activo: false, tactil: e.pointerType !== "mouse"};
   if (arrastre.tactil) arrastre.t = setTimeout(() => iniciarArrastre(e.clientX, e.clientY), 450);
 });
@@ -271,7 +259,7 @@ document.addEventListener("pointermove", e => {
   if (!arrastre) return;
   const d = Math.hypot(e.clientX - arrastre.x, e.clientY - arrastre.y);
   if (!arrastre.activo) {
-    if (arrastre.tactil) { if (d > 10) { clearTimeout(arrastre.t); arrastre = null; } return; }  // estaba desplazando la página
+    if (arrastre.tactil) { if (d > 10) { clearTimeout(arrastre.t); arrastre = null; } return; }
     if (d < 6) return;
     iniciarArrastre(e.clientX, e.clientY);
   }
@@ -290,44 +278,32 @@ function terminarArrastre(e, soltar) {
   a.g.remove(); a.b.classList.remove("arrastrando");
   document.querySelectorAll("#vC .col.destino").forEach(c => c.classList.remove("destino"));
   const c = soltar && columnaEn(e.clientX, e.clientY);
-  if (c && c.dataset.t) cambiar(a.b.dataset.i, "terminal_real", c.dataset.t);
+  if (c && c.dataset.t) cambiar(a.b.dataset.i, {terminal_real: c.dataset.t});
 }
 document.addEventListener("pointerup", e => terminarArrastre(e, true));
 document.addEventListener("pointercancel", e => terminarArrastre(e, false));
 $("vC").addEventListener("contextmenu", e => { if (e.target.closest(".chip")) e.preventDefault(); });
-$("dlg").addEventListener("close", () => {
-  if ($("dlg").returnValue !== "ok" || !editando) return;
-  Object.assign(editando, {terminal_real: $("d-term").value, operativo: $("d-est").value, observacion: $("d-obs").value});
-  pintar();
-});
-["buscar", "f-tipo", "f-estado"].forEach(id => $(id).addEventListener("input", pintar));
-$("sel-fecha").addEventListener("change", e => e.target.value && cargar(e.target.value).catch(x => alert(x.message)));
 
-$("enviar").onclick = async () => {
-  const nombre = $("encargado").value.trim();
-  if (!nombre) { alert("Escribe el nombre del encargado que envía el reporte."); return; }
-  const msg = datos.existe ? "¿Guardar la corrección de este reporte?" : `¿Enviar el reporte del ${fmtFecha(datos.fecha)}? Solo se permite un envío por día.`;
-  if (!confirm(msg)) return;
-  $("enviar").disabled = true;
-  try {
-    await api("/api/reporte", {fecha: datos.fecha, encargado: nombre,
-      filas: filas.map(f => ({interno: f.interno, terminal_real: f.terminal_real, operativo: f.operativo, observacion: f.observacion}))});
-    await cargar(datos.fecha);
-    window.scrollTo({top: 0, behavior: "smooth"});
-  } catch (x) { alert(x.message); }
-  $("enviar").disabled = false;
-};
-window.addEventListener("beforeunload", e => {
-  if (datos && datos.puede_editar && !datos.existe && filas.some(f => original[f.interno] !== llave(f))) e.preventDefault();
+["buscar", "f-tipo", "f-estado"].forEach(id => $(id).addEventListener("input", pintar));
+$("sel-fecha").addEventListener("change", async e => {
+  if (!e.target.value) return;
+  if (pendientes().length && !invitado()) await guardar();
+  cargar(e.target.value).catch(x => alert(x.message));
 });
+window.addEventListener("beforeunload", e => { if (!invitado() && (pendientes().length || guardando)) e.preventDefault(); });
+
+// Trae los cambios de otros usuarios cada minuto, si no hay nada pendiente ni abierto.
+setInterval(() => {
+  if (!datos || invitado() || guardando || arrastre || $("dlg").open || pendientes().length || document.hidden) return;
+  cargar(datos.fecha).catch(() => {});
+}, 60000);
 
 (async () => {
   try {
     yo = await barra("/");
-    $("l-fecha").hidden = false;
-    $("sel-fecha").max = new Date().toISOString().slice(0, 10);
+    $("sel-fecha").max = new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
     await cargar();
-  } catch (x) { $("estado").hidden = false; $("estado").className = "msg err"; $("estado").textContent = x.message; }
+  } catch (x) { aviso(x.message, "err"); }
 })();
 </script>
 </body>

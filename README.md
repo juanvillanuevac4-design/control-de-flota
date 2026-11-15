@@ -8,6 +8,11 @@ Registro diario de la distribución de la flota del depósito, basado en `Distru
 - **Listas**: Terminal Real = Pie Andino, Aguirre Luco, Juanita, Otro. Operativo = Operativo, Mantenimiento.
 - Hay un solo reporte por fecha. Cualquier usuario puede crearlo o corregirlo (también días anteriores); queda `registrado_por` y `modificado_por`.
 
+- **Guardado automático**: cada cambio (arrastrar, doble click, "Aplicar y guardar") se guarda al instante; "Guardar corrección" fuerza el guardado. El primer guardado del día crea el reporte con la foto completa.
+- **Historial** (`cambios`): cada día parte con la foto completa (`inicial`) y luego se agrega una fila por cada bus que cambia, con fecha y hora, usuario y el estado completo del bus. Con eso se arma el estado de la flota en cualquier fecha y hora.
+- **Motivos de mantenimiento** (`motivos`): lista desplegable al marcar Mantenimiento, con mantenedor en `/admin`.
+- **Perfil invitado**: usa todo, pero sus cambios quedan solo en su pantalla; el servidor rechaza cualquier escritura.
+
 ## Pantallas
 
 - `/` Reporte diario en vista **Por terminal** (propuesta C elegida; las propuestas A Tabla y B Tarjetas quedan en el historial de git).
