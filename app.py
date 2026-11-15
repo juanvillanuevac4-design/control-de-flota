@@ -125,7 +125,67 @@ CREATE TABLE IF NOT EXISTS cambios (
 CREATE INDEX IF NOT EXISTS cambios_interno_ts ON cambios (interno, ts DESC);
 CREATE INDEX IF NOT EXISTS cambios_ts ON cambios (ts);
 CREATE TABLE IF NOT EXISTS migraciones (nombre TEXT PRIMARY KEY, fecha TIMESTAMPTZ NOT NULL DEFAULT now());
+-- Bitácora: una fila por cada acción (quién, cuándo, desde dónde, qué cambió y cómo estaba antes).
+-- Solo se agregan filas: un disparador impide editarlas o borrarlas.
+CREATE TABLE IF NOT EXISTS bitacora (
+    id BIGSERIAL PRIMARY KEY,
+    ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+    usuario TEXT NOT NULL,
+    nombre TEXT NOT NULL DEFAULT '',
+    rol TEXT NOT NULL DEFAULT '',
+    origen TEXT NOT NULL,
+    accion TEXT NOT NULL,
+    fecha_reporte DATE,
+    interno TEXT NOT NULL DEFAULT '',
+    objeto TEXT NOT NULL DEFAULT '',
+    campo TEXT NOT NULL DEFAULT '',
+    antes TEXT NOT NULL DEFAULT '',
+    despues TEXT NOT NULL DEFAULT '',
+    detalle TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS bitacora_ts ON bitacora (ts);
+CREATE INDEX IF NOT EXISTS bitacora_usuario_ts ON bitacora (usuario, ts);
+CREATE OR REPLACE FUNCTION solo_agregar() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+    RAISE EXCEPTION 'La tabla % solo admite agregar registros: las correcciones se registran como un cambio nuevo', TG_TABLE_NAME;
+END $$;
+DROP TRIGGER IF EXISTS bitacora_solo_agregar ON bitacora;
+CREATE TRIGGER bitacora_solo_agregar BEFORE UPDATE OR DELETE ON bitacora FOR EACH ROW EXECUTE FUNCTION solo_agregar();
+DROP TRIGGER IF EXISTS bitacora_sin_vaciar ON bitacora;
+CREATE TRIGGER bitacora_sin_vaciar BEFORE TRUNCATE ON bitacora FOR EACH STATEMENT EXECUTE FUNCTION solo_agregar();
 """
+
+# El historial de estados (cambios) queda igual de protegido, después de las migraciones antiguas.
+SCHEMA_PROTEGER_CAMBIOS = """
+DROP TRIGGER IF EXISTS cambios_solo_agregar ON cambios;
+CREATE TRIGGER cambios_solo_agregar BEFORE UPDATE OR DELETE ON cambios FOR EACH ROW EXECUTE FUNCTION solo_agregar();
+DROP TRIGGER IF EXISTS cambios_sin_vaciar ON cambios;
+CREATE TRIGGER cambios_sin_vaciar BEFORE TRUNCATE ON cambios FOR EACH STATEMENT EXECUTE FUNCTION solo_agregar();
+"""
+
+NOMBRE_CAMPO = {"terminal_real": "Terminal Real", "operativo": "Estado", "motivo": "Motivo mantenimiento",
+                "observacion": "Observación"}
+ORIGENES = {"arrastre": "Arrastre entre terminales", "doble_click": "Doble click", "detalle": "Ventana del bus",
+            "pantalla": "Reporte diario"}
+NOMBRE_ROL = {"admin": "Administrador", "operador": "Operador", "invitado": "Invitado"}
+SISTEMA = {"usuario": "sistema", "nombre": "Sistema", "rol": "sistema"}
+
+
+def registrar(cx, accion, origen, u=None, ts=None, **k):
+    """Agrega una fila a la bitácora. k: fecha_reporte, interno, objeto, campo, antes, despues, detalle."""
+    registrar_varias(cx, [dict(k, accion=accion, origen=origen)], u, ts)
+
+
+def registrar_varias(cx, filas, u=None, ts=None):
+    u = u or SISTEMA
+    ts = ts or ahora()
+    cx.cursor().executemany(
+        """INSERT INTO bitacora (ts, usuario, nombre, rol, origen, accion, fecha_reporte, interno, objeto, campo, antes, despues, detalle)
+           VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+        [(ts, u["usuario"], u.get("nombre", ""), u.get("rol", ""), f["origen"], f["accion"], f.get("fecha_reporte"),
+          f.get("interno", ""), f.get("objeto", ""), f.get("campo", ""), str(f.get("antes", "") or ""),
+          str(f.get("despues", "") or ""), f.get("detalle", "")) for f in filas],
+    )
 
 app = Flask(__name__, static_folder="static")
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
@@ -198,6 +258,25 @@ def iniciar_bd():
             ).fetchall()
             app.logger.info("Observaciones que quedan: %s", "; ".join(
                 f"{f['fecha']} {f['interno']} {f['operativo']}: {f['observacion']}" for f in resto) or "ninguna")
+        # Una sola vez: dejar en la bitácora las correcciones que hizo obs_a_motivo_todos (15-11-2026),
+        # que se aplicaron editando el historial antes de que existiera la bitácora.
+        if cx.execute("INSERT INTO migraciones (nombre) VALUES ('bitacora_correcciones_obs') ON CONFLICT DO NOTHING RETURNING 1").fetchone():
+            m = cx.execute("SELECT fecha FROM migraciones WHERE nombre='obs_a_motivo_todos'").fetchone()
+            corregidas = cx.execute(
+                f"""SELECT b.fecha, b.interno, b.motivo FROM base b JOIN motivos m ON m.nombre = b.motivo
+                    WHERE b.operativo = 'Operativo' AND b.observacion = '' ORDER BY b.fecha, {ORDEN_INTERNO}"""
+            ).fetchall() if m else []
+            filas = []
+            for f in corregidas:
+                comun = dict(origen="Corrección de datos", accion="Corrección: observación pasada a motivo",
+                             fecha_reporte=f["fecha"], interno=f["interno"],
+                             detalle="Registrada después: se aplicó al historial antes de existir la bitácora")
+                filas += [dict(comun, campo="Observación", antes=f["motivo"], despues=""),
+                          dict(comun, campo="Motivo mantenimiento", antes="", despues=f["motivo"])]
+            if filas:
+                registrar_varias(cx, filas, ts=m["fecha"])
+            app.logger.info("Bitácora: %s correcciones anteriores registradas", len(corregidas))
+        cx.execute(SCHEMA_PROTEGER_CAMBIOS)
         hay_admin = cx.execute("SELECT 1 FROM usuarios WHERE rol='admin' AND activo").fetchone()
         if not hay_admin and ADMIN_CLAVE:
             cx.execute(
@@ -205,6 +284,7 @@ def iniciar_bd():
                    ON CONFLICT (usuario) DO UPDATE SET clave_hash = EXCLUDED.clave_hash, rol='admin', activo=TRUE""",
                 (ADMIN_USUARIO.lower(), generate_password_hash(ADMIN_CLAVE)),
             )
+            registrar(cx, "Usuario administrador inicial creado", "Sistema", objeto=ADMIN_USUARIO.lower())
             app.logger.info("Administrador inicial '%s' creado", ADMIN_USUARIO)
 
 
@@ -316,17 +396,26 @@ def api_login():
     with conectar() as cx:
         r = cx.execute("SELECT * FROM usuarios WHERE lower(usuario)=%s AND activo", (usuario,)).fetchone()
     if not r or not check_password_hash(r["clave_hash"], clave):
+        if r:
+            with conectar() as cx:
+                registrar(cx, "Ingreso fallido (contraseña incorrecta)", "Sesión", r)
         time.sleep(0.7)
         return jsonify(error="Usuario o contraseña incorrectos."), 401
     session.clear()
     session.permanent = True
     session["u"] = {"id": r["id"], "usuario": r["usuario"], "nombre": r["nombre"], "rol": r["rol"]}
     session["verificado"] = time.time()
+    with conectar() as cx:
+        registrar(cx, "Ingreso", "Sesión", r)
     return jsonify(ok=True)
 
 
 @app.post("/api/logout")
 def api_logout():
+    u = usuario_actual()
+    if u:
+        with conectar() as cx:
+            registrar(cx, "Salida", "Sesión", u)
     session.clear()
     return jsonify(ok=True)
 
@@ -350,6 +439,7 @@ def api_mi_clave():
             return jsonify(error="La contraseña actual no es correcta."), 400
         cx.execute("UPDATE usuarios SET clave_hash=%s WHERE id=%s",
                    (generate_password_hash(nueva), usuario_actual()["id"]))
+        registrar(cx, "Cambió su propia contraseña", "Sesión", usuario_actual(), objeto=usuario_actual()["usuario"])
     return jsonify(ok=True)
 
 
@@ -444,6 +534,7 @@ def api_guardar_reporte():
             "terminal_real": f["terminal_real"], "operativo": f["operativo"],
             "motivo": (f.get("motivo") or "").strip()[:120] if f["operativo"] == "Mantenimiento" else "",
             "observacion": (f.get("observacion") or "").strip()[:500],
+            "origen": ORIGENES.get(f.get("origen"), ORIGENES["pantalla"]),
         }
     with conectar() as cx:
         cx.execute("SELECT pg_advisory_xact_lock(hashtext('reporte' || %s))", (fecha.isoformat(),))
@@ -470,8 +561,15 @@ def api_guardar_reporte():
                 [(n, fecha, u["usuario"], u["nombre"], f["interno"], f["terminal_real"], f["operativo"], f["motivo"],
                   f["observacion"]) for f in filas],
             )
+            ant = cx.execute("SELECT fecha FROM reportes WHERE fecha < %s ORDER BY fecha DESC LIMIT 1", (fecha,)).fetchone()
+            registrar(cx, "Reporte del día creado", ORIGENES["pantalla"], u, n, fecha_reporte=fecha,
+                      detalle=f"{len(filas)} buses, " + (f"tomados del reporte del {ant['fecha']:%d-%m-%Y}" if ant
+                                                          else "estado inicial del Excel") + f". Encargado: {encargado}")
         else:
             rid = rep["id"]
+            if encargado != rep["encargado"]:
+                registrar(cx, "Cambio de encargado del reporte", ORIGENES["pantalla"], u, n, fecha_reporte=fecha,
+                          campo="Encargado", antes=rep["encargado"], despues=encargado)
             cx.execute("UPDATE reportes SET encargado=%s, modificado_por=%s, modificado=now() WHERE id=%s",
                        (encargado, u["usuario"], rid))
         actuales = {f["interno"]: f for f in cx.execute("SELECT * FROM base WHERE reporte_id=%s", (rid,)).fetchall()}
@@ -479,6 +577,10 @@ def api_guardar_reporte():
         if faltan:
             return jsonify(error="Buses que no están en el reporte: " + ", ".join(faltan)), 400
         cambiados = [i for i, e in entradas.items() if any(e[c] != (actuales[i][c] or "") for c in CAMPOS)]
+        registrar_varias(cx, [
+            dict(accion="Cambio de bus", origen=entradas[i]["origen"], fecha_reporte=fecha, interno=i,
+                 campo=NOMBRE_CAMPO[c], antes=actuales[i][c] or "", despues=entradas[i][c])
+            for i in cambiados for c in CAMPOS if entradas[i][c] != (actuales[i][c] or "")], u, n)
         for i in cambiados:
             e = entradas[i]
             cx.execute(
@@ -515,10 +617,7 @@ def api_dashboard():
     hasta = parse_fecha(request.args.get("hasta"), ahora().date())
     desde = parse_fecha(request.args.get("desde"), hasta - timedelta(days=29))
     with conectar() as cx:
-        filas = cx.execute(
-            """SELECT fecha, interno, placa, tipo_bus, marca_chasis, terminal_real, operativo, observacion, motivo FROM base
-               WHERE fecha BETWEEN %s AND %s ORDER BY fecha""", (desde, hasta)
-        ).fetchall()
+        filas = estado_diario(cx, desde, hasta)
     return jsonify(
         desde=desde.isoformat(), hasta=hasta.isoformat(), terminales=TERMINALES,
         filas=[[f["fecha"].isoformat(), f["interno"], f["placa"], f["tipo_bus"], f["marca_chasis"],
@@ -526,13 +625,27 @@ def api_dashboard():
     )
 
 
+def estado_diario(cx, desde, hasta):
+    """Estado de cada bus al cierre de cada día, armado desde el historial (último registro de cada bus en ese reporte)."""
+    return cx.execute(
+        """SELECT x.*, r.hora, r.encargado, b.placa, b.tipo_bus, b.tipo_flota, b.marca_chasis, b.terminal_op,
+                  ult.ts AS cambio_ts, ult.nombre AS cambio_por
+           FROM (SELECT DISTINCT ON (fecha, interno) fecha, interno, terminal_real, operativo, motivo, observacion
+                 FROM cambios WHERE fecha BETWEEN %s AND %s ORDER BY fecha, interno, ts DESC, id DESC) x
+           JOIN buses b ON b.interno = x.interno
+           JOIN reportes r ON r.fecha = x.fecha
+           LEFT JOIN LATERAL (SELECT c.ts, c.nombre FROM cambios c
+                              WHERE c.fecha = x.fecha AND c.interno = x.interno AND c.tipo = 'cambio'
+                              ORDER BY c.ts DESC, c.id DESC LIMIT 1) ult ON TRUE
+           ORDER BY x.fecha, CASE WHEN x.interno ~ '^[0-9]+$' THEN x.interno::int END, x.interno""", (desde, hasta)
+    ).fetchall()
+
+
 def filas_descarga():
     desde = parse_fecha(request.args.get("desde"), date(1900, 1, 1))
     hasta = parse_fecha(request.args.get("hasta"), date(2999, 12, 31))
     with conectar() as cx:
-        filas = cx.execute(
-            f"SELECT * FROM base WHERE fecha BETWEEN %s AND %s ORDER BY fecha, {ORDEN_INTERNO}", (desde, hasta)
-        ).fetchall()
+        filas = estado_diario(cx, desde, hasta)
     return [[f["fecha"], f["hora"].strftime("%H:%M"), f["encargado"], f["placa"], f["interno"], f["tipo_bus"],
              f["tipo_flota"], f["marca_chasis"], f["terminal_op"], f["terminal_real"], f["operativo"], f["motivo"],
              f["observacion"], f["cambio_ts"].astimezone(TZ).strftime("%d-%m-%Y %H:%M") if f["cambio_ts"] else "",
@@ -548,14 +661,15 @@ def momento_param():
 
 
 def filas_estado(momento):
-    """Estado de cada bus en un instante: el último registro del historial hasta ese momento."""
+    """Estado de cada bus en un instante: el último registro hasta ese momento del reporte más reciente
+    (una corrección hecha hoy a un día anterior no cambia el estado de hoy)."""
     with conectar() as cx:
         filas = cx.execute(
             f"""SELECT * FROM (
                   SELECT DISTINCT ON (c.interno) c.*, b.placa, b.tipo_bus, b.tipo_flota, b.marca_chasis, b.terminal_op
                   FROM cambios c JOIN buses b ON b.interno = c.interno
-                  WHERE c.ts <= %s ORDER BY c.interno, c.ts DESC, c.id DESC) x
-                ORDER BY {ORDEN_INTERNO}""", (momento + timedelta(seconds=59, microseconds=999999),)
+                  WHERE c.ts <= %s AND c.fecha <= %s ORDER BY c.interno, c.fecha DESC, c.ts DESC, c.id DESC) x
+                ORDER BY {ORDEN_INTERNO}""", (momento + timedelta(seconds=59, microseconds=999999), momento.date())
         ).fetchall()
     return [[momento.strftime("%d-%m-%Y %H:%M"), f["placa"], f["interno"], f["tipo_bus"], f["tipo_flota"],
              f["marca_chasis"], f["terminal_op"], f["terminal_real"], f["operativo"], f["motivo"], f["observacion"],
@@ -579,6 +693,73 @@ def filas_cambios():
              "Foto inicial" if f["tipo"] == "inicial" else "Cambio", f["usuario"], f["nombre"], f["placa"], f["interno"],
              f["tipo_bus"], f["tipo_flota"], f["marca_chasis"], f["terminal_op"], f["terminal_real"], f["operativo"],
              f["motivo"], f["observacion"]] for f in filas]
+
+
+COLUMNAS_BITACORA = ["Fecha y hora", "Usuario", "Nombre", "Rol", "Origen", "Acción", "Fecha reporte", "INTERNO",
+                     "Objeto", "Campo", "Antes", "Después", "Detalle"]
+
+
+def consulta_bitacora(cx, limite=None):
+    """Bitácora filtrada por ?desde, ?hasta (días, hora de Chile), ?usuario, ?interno y ?tipo (buses|admin|sesion|descargas)."""
+    a = request.args
+    desde = parse_fecha(a.get("desde"), date(1900, 1, 1))
+    hasta = parse_fecha(a.get("hasta"), date(2999, 12, 31))
+    cond, par = ["(ts AT TIME ZONE %s)::date BETWEEN %s AND %s"], [str(TZ), desde, hasta]
+    if a.get("usuario"):
+        cond.append("usuario = %s"); par.append(a["usuario"])
+    if a.get("interno"):
+        cond.append("interno = %s"); par.append(a["interno"].strip().upper())
+    tipo = {"buses": "(accion IN ('Cambio de bus','Reporte del día creado','Cambio de encargado del reporte') OR accion LIKE 'Corrección%%')",
+            "admin": "origen = 'Administración'", "sesion": "origen = 'Sesión'", "descargas": "origen = 'Descarga'"}.get(a.get("tipo"))
+    if tipo:
+        cond.append(tipo)
+    sql = f"SELECT * FROM bitacora WHERE {' AND '.join(cond)} ORDER BY ts DESC, id DESC"
+    if limite:
+        sql += f" LIMIT {int(limite)}"
+    return cx.execute(sql, par).fetchall()
+
+
+def fila_bitacora(f):
+    return [f["ts"].astimezone(TZ).strftime("%d-%m-%Y %H:%M:%S"), f["usuario"], f["nombre"],
+            NOMBRE_ROL.get(f["rol"], f["rol"]), f["origen"], f["accion"],
+            f["fecha_reporte"].strftime("%d-%m-%Y") if f["fecha_reporte"] else "", f["interno"], f["objeto"],
+            f["campo"], f["antes"], f["despues"], f["detalle"]]
+
+
+@app.get("/api/bitacora")
+@requiere_login
+def api_bitacora():
+    """Últimas acciones (hasta 300) y resumen por usuario del período, para el dashboard."""
+    with conectar() as cx:
+        filas = consulta_bitacora(cx)
+        usuarios = cx.execute("SELECT DISTINCT usuario, nombre FROM bitacora ORDER BY nombre").fetchall()
+    resumen = {}
+    for f in filas:
+        r = resumen.setdefault(f["usuario"], {"usuario": f["usuario"], "nombre": f["nombre"], "acciones": 0,
+                                              "cambios_bus": 0, "buses": set(), "ultima": f["ts"]})
+        r["acciones"] += 1
+        if f["accion"] == "Cambio de bus":
+            r["cambios_bus"] += 1
+            r["buses"].add(f["interno"])
+    res = sorted(({**r, "buses": len(r["buses"]), "ultima": r["ultima"].astimezone(TZ).strftime("%d-%m-%Y %H:%M")}
+                  for r in resumen.values()), key=lambda r: -r["acciones"])
+    return jsonify(total=len(filas), filas=[fila_bitacora(f) for f in filas[:300]], resumen=res,
+                   usuarios=[{"usuario": u["usuario"], "nombre": u["nombre"]} for u in usuarios])
+
+
+@app.get("/api/bitacora.<fmt>")
+@requiere_login
+def api_bitacora_descarga(fmt):
+    with conectar() as cx:
+        filas = [fila_bitacora(f) for f in consulta_bitacora(cx)]
+        registrar_descarga(cx, "Bitácora de acciones", fmt)
+    return (como_xlsx(COLUMNAS_BITACORA, filas, "bitacora_flota", "Bitácora") if fmt == "xlsx"
+            else como_csv(COLUMNAS_BITACORA, filas, "bitacora_flota"))
+
+
+def registrar_descarga(cx, que, fmt):
+    filtros = ", ".join(f"{k}={v}" for k, v in request.args.items() if v)
+    registrar(cx, "Descarga: " + que, "Descarga", usuario_actual(), detalle=f"{fmt}" + (f" ({filtros})" if filtros else ""))
 
 
 def como_csv(columnas, filas, nombre):
@@ -618,6 +799,8 @@ def como_xlsx(columnas, filas, nombre, hoja):
 @requiere_login
 def api_descarga(fmt):
     filas = filas_descarga()
+    with conectar() as cx:
+        registrar_descarga(cx, "Base por día", fmt)
     return como_xlsx(COLUMNAS_BASE, filas, "base_flota", "Base") if fmt == "xlsx" else como_csv(COLUMNAS_BASE, filas, "base_flota")
 
 
@@ -626,6 +809,8 @@ def api_descarga(fmt):
 def api_estado(fmt):
     m = momento_param()
     filas = filas_estado(m)
+    with conectar() as cx:
+        registrar_descarga(cx, "Estado a una fecha y hora", fmt)
     nombre = "estado_flota_" + m.strftime("%Y%m%d_%H%M")
     return como_xlsx(COLUMNAS_ESTADO, filas, nombre, "Estado") if fmt == "xlsx" else como_csv(COLUMNAS_ESTADO, filas, nombre)
 
@@ -634,6 +819,8 @@ def api_estado(fmt):
 @requiere_login
 def api_cambios(fmt):
     filas = filas_cambios()
+    with conectar() as cx:
+        registrar_descarga(cx, "Historial de estados", fmt)
     return como_xlsx(COLUMNAS_CAMBIOS, filas, "historial_cambios", "Cambios") if fmt == "xlsx" else como_csv(COLUMNAS_CAMBIOS, filas, "historial_cambios")
 
 
@@ -669,6 +856,8 @@ def api_admin_crear_usuario():
             return jsonify(error="Ese nombre de usuario ya existe."), 409
         cx.execute("INSERT INTO usuarios (usuario, nombre, clave_hash, rol) VALUES (%s,%s,%s,%s)",
                    (usuario, nombre, generate_password_hash(clave), rol))
+        registrar(cx, "Usuario creado", "Administración", usuario_actual(), objeto=usuario,
+                  detalle=f"{nombre}, rol {NOMBRE_ROL.get(rol, rol)}")
     return jsonify(ok=True)
 
 
@@ -692,8 +881,17 @@ def api_admin_editar_usuario(uid):
         if d.get("clave") and len(d["clave"]) < 8:
             return jsonify(error="La contraseña debe tener al menos 8 caracteres."), 400
         cx.execute("UPDATE usuarios SET rol=%s, activo=%s WHERE id=%s", (rol, activo, uid))
+        filas = []
+        if rol != u["rol"]:
+            filas.append(dict(accion="Cambio de rol", campo="Rol", antes=NOMBRE_ROL.get(u["rol"], u["rol"]),
+                              despues=NOMBRE_ROL.get(rol, rol)))
+        if activo != u["activo"]:
+            filas.append(dict(accion="Usuario activado" if activo else "Usuario desactivado", campo="Estado",
+                              antes="Activo" if u["activo"] else "Inactivo", despues="Activo" if activo else "Inactivo"))
         if d.get("clave"):
             cx.execute("UPDATE usuarios SET clave_hash=%s WHERE id=%s", (generate_password_hash(d["clave"]), uid))
+            filas.append(dict(accion="Contraseña cambiada por un administrador", campo="Contraseña"))
+        registrar_varias(cx, [dict(f, origen="Administración", objeto=u["usuario"]) for f in filas], usuario_actual())
     return jsonify(ok=True)
 
 
@@ -704,7 +902,15 @@ def api_admin_buses():
     d = request.get_json(silent=True) or {}
     with conectar() as cx:
         if d.get("id"):
-            cx.execute("UPDATE buses SET activo=%s WHERE id=%s", (bool(d.get("activo")), d["id"]))
+            b = cx.execute("SELECT * FROM buses WHERE id=%s", (d["id"],)).fetchone()
+            if not b:
+                return jsonify(error="El bus no existe."), 404
+            activo = bool(d.get("activo"))
+            cx.execute("UPDATE buses SET activo=%s WHERE id=%s", (activo, d["id"]))
+            if activo != b["activo"]:
+                registrar(cx, "Bus activado en la nómina" if activo else "Bus desactivado de la nómina", "Administración",
+                          usuario_actual(), interno=b["interno"], objeto=b["placa"], campo="Estado en nómina",
+                          antes="Activo" if b["activo"] else "Inactivo", despues="Activo" if activo else "Inactivo")
             return jsonify(ok=True)
         campos = {k: (d.get(k) or "").strip().upper() for k in
                   ("placa", "interno", "tipo_bus", "tipo_flota", "marca_chasis", "terminal_op")}
@@ -716,6 +922,9 @@ def api_admin_buses():
         cx.execute(
             """INSERT INTO buses (placa, interno, tipo_bus, tipo_flota, marca_chasis, terminal_op)
                VALUES (%(placa)s,%(interno)s,%(tipo_bus)s,%(tipo_flota)s,%(marca_chasis)s,%(terminal_op)s)""", campos)
+        registrar(cx, "Bus agregado a la nómina", "Administración", usuario_actual(), interno=campos["interno"],
+                  objeto=campos["placa"], detalle=", ".join(v for v in (campos["tipo_bus"], campos["tipo_flota"],
+                                                                         campos["marca_chasis"], campos["terminal_op"]) if v))
     return jsonify(ok=True)
 
 
@@ -727,16 +936,28 @@ def api_admin_motivos():
     nombre = (d.get("nombre") or "").strip()[:120]
     with conectar() as cx:
         if d.get("id"):
-            if nombre:
+            m = cx.execute("SELECT * FROM motivos WHERE id=%s", (d["id"],)).fetchone()
+            if not m:
+                return jsonify(error="El motivo no existe."), 404
+            if nombre and nombre != m["nombre"]:
                 if cx.execute("SELECT 1 FROM motivos WHERE nombre=%s AND id<>%s", (nombre, d["id"])).fetchone():
                     return jsonify(error="Ya existe un motivo con ese nombre."), 409
                 cx.execute("UPDATE motivos SET nombre=%s WHERE id=%s", (nombre, d["id"]))
-            if "activo" in d:
+                registrar(cx, "Motivo renombrado", "Administración", usuario_actual(), objeto=nombre, campo="Nombre",
+                          antes=m["nombre"], despues=nombre)
+            if "activo" in d and bool(d["activo"]) != m["activo"]:
                 cx.execute("UPDATE motivos SET activo=%s WHERE id=%s", (bool(d["activo"]), d["id"]))
+                registrar(cx, "Motivo activado" if d["activo"] else "Motivo desactivado", "Administración",
+                          usuario_actual(), objeto=nombre or m["nombre"], campo="Estado",
+                          antes="Activo" if m["activo"] else "Inactivo", despues="Activo" if d["activo"] else "Inactivo")
             return jsonify(ok=True)
         if not nombre:
             return jsonify(error="Escribe el nombre del motivo."), 400
+        previo = cx.execute("SELECT activo FROM motivos WHERE nombre=%s", (nombre,)).fetchone()
         cx.execute("INSERT INTO motivos (nombre) VALUES (%s) ON CONFLICT (nombre) DO UPDATE SET activo=TRUE", (nombre,))
+        if not previo or not previo["activo"]:
+            registrar(cx, "Motivo agregado" if not previo else "Motivo activado", "Administración", usuario_actual(),
+                      objeto=nombre)
     return jsonify(ok=True)
 
 

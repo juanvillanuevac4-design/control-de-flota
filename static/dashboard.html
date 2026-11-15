@@ -22,6 +22,7 @@ h1{font-size:1.45rem;font-weight:800}
 .heat td.c{width:22px;height:20px;border-radius:4px;font-weight:700}
 .heat td.o{background:var(--ok-bg);color:var(--ok)} .heat td.m{background:var(--mt);color:#fff} .heat td.n{background:var(--surface2)}
 .heat td.d{font-weight:700;padding-left:6px;text-align:left}
+#bit td.mono{white-space:nowrap}
 .down-row{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end;justify-content:space-between}
 </style>
 </head>
@@ -52,14 +53,6 @@ h1{font-size:1.45rem;font-weight:800}
     </div>
   </section>
 
-  <section class="card pad down-row">
-    <div style="flex-basis:100%"><h2 style="font-size:1rem;margin:0">Historial de cambios</h2>
-      <p class="note">Cada guardado queda registrado: la foto completa con que parte el día y luego cada cambio con fecha, hora y usuario. Usa el mismo rango de días de arriba.</p></div>
-    <div class="row">
-      <a class="btn" id="h-xlsx" href="#">Descargar historial (Excel)</a>
-      <a class="btn sec" id="h-csv" href="#">CSV</a>
-    </div>
-  </section>
 
   <div id="vacio" class="msg warn" hidden>No hay reportes en el rango elegido.</div>
 
@@ -74,6 +67,28 @@ h1{font-size:1.45rem;font-weight:800}
     <section class="card pad"><h2>Buses en mantenimiento</h2><div class="scroll" id="t-mant"></div></section>
   </div>
 
+  <!-- Bitácora: cada acción con quién, cuándo, qué había antes y qué quedó -->
+  <section class="card pad" id="bit">
+    <div class="down-row">
+      <div style="flex-basis:100%"><h2 style="margin:0">Bitácora: quién cambió qué</h2>
+        <p class="note">Cada acción queda registrada y no se puede editar ni borrar: cambios de buses (arrastre, doble click o ventana del bus) campo por campo con el valor anterior y el nuevo, cambios de administración, ingresos y descargas. Usa el rango de días de arriba. Las pruebas del perfil invitado no se guardan.</p></div>
+      <div class="row">
+        <label class="f">Usuario<select id="b-usuario"><option value="">Todos</option></select></label>
+        <label class="f">Tipo<select id="b-tipo"><option value="">Todo</option><option value="buses" selected>Cambios de buses</option><option value="admin">Administración</option><option value="sesion">Ingresos y salidas</option><option value="descargas">Descargas</option></select></label>
+        <label class="f">Interno<input id="b-interno" size="7" placeholder="Todos"></label>
+      </div>
+      <div class="row">
+        <a class="btn" id="b-xlsx" href="#">Descargar bitácora (Excel)</a>
+        <a class="btn sec" id="b-csv" href="#">CSV</a>
+        <a class="btn sec" id="h-xlsx" href="#" title="Estado completo de cada bus después de cada cambio">Historial de estados</a>
+      </div>
+    </div>
+    <h3 style="font-size:.9rem;margin:14px 0 6px">Resumen por usuario</h3>
+    <div class="scroll" id="b-res"></div>
+    <h3 style="font-size:.9rem;margin:14px 0 6px" id="b-tit">Acciones</h3>
+    <div class="scroll" style="max-height:480px" id="b-tab"></div>
+  </section>
+
 
 </div>
 <script src="/static/comun.js"></script>
@@ -86,7 +101,10 @@ const hoyISO = () => new Date(Date.now() - new Date().getTimezoneOffset() * 6e4)
 function enlaces() {
   const q = `?desde=${$("desde").value}&hasta=${$("hasta").value}`;
   $("d-xlsx").href = "/api/descarga.xlsx" + q; $("d-csv").href = "/api/descarga.csv" + q;
-  $("h-xlsx").href = "/api/cambios.xlsx" + q; $("h-csv").href = "/api/cambios.csv" + q;
+  $("h-xlsx").href = "/api/cambios.xlsx" + q;
+  const b = q + `&usuario=${encodeURIComponent($("b-usuario").value)}&tipo=${$("b-tipo").value}&interno=${encodeURIComponent($("b-interno").value.trim())}`;
+  $("b-xlsx").href = "/api/bitacora.xlsx" + b; $("b-csv").href = "/api/bitacora.csv" + b;
+  return b;
   const m = "?momento=" + encodeURIComponent($("momento").value);
   $("e-xlsx").href = "/api/estado.xlsx" + m; $("e-csv").href = "/api/estado.csv" + m;
 }
@@ -162,8 +180,21 @@ function v1() {
 }
 
 
+async function bitacora() {
+  const q = enlaces(), B = await api("/api/bitacora" + q), u = $("b-usuario").value;
+  $("b-usuario").innerHTML = '<option value="">Todos</option>' + B.usuarios.map(x => `<option value="${esc(x.usuario)}" ${x.usuario === u ? "selected" : ""}>${esc(x.nombre)} (${esc(x.usuario)})</option>`).join("");
+  $("b-res").innerHTML = B.resumen.length ? `<table><thead><tr><th>Usuario</th><th>Nombre</th><th>Acciones</th><th>Cambios de buses</th><th>Buses distintos</th><th>Última acción</th></tr></thead><tbody>` +
+    B.resumen.map(r => `<tr><td class="mono">${esc(r.usuario)}</td><td>${esc(r.nombre)}</td><td class="mono">${r.acciones}</td><td class="mono">${r.cambios_bus}</td><td class="mono">${r.buses}</td><td class="mono">${esc(r.ultima)}</td></tr>`).join("") + "</tbody></table>"
+    : '<p class="note">Sin acciones en este período.</p>';
+  $("b-tit").textContent = B.total > B.filas.length ? `Últimas ${B.filas.length} de ${B.total} acciones (descarga para verlas todas)` : `${B.total} acciones`;
+  $("b-tab").innerHTML = B.filas.length ? `<table><thead><tr><th>Fecha y hora</th><th>Usuario</th><th>Origen</th><th>Acción</th><th>Día</th><th>Interno</th><th>Campo</th><th>Antes</th><th>Después</th><th>Detalle</th></tr></thead><tbody>` +
+    B.filas.map(f => `<tr><td class="mono">${esc(f[0])}</td><td>${esc(f[2])}</td><td>${esc(f[4])}</td><td>${esc(f[5])}${f[8] ? " · " + esc(f[8]) : ""}</td><td class="mono">${esc(f[6])}</td><td class="mono"><b>${esc(f[7])}</b></td><td>${esc(f[9])}</td><td>${esc(f[10])}</td><td><b>${esc(f[11])}</b></td><td class="note">${esc(f[12])}</td></tr>`).join("") + "</tbody></table>"
+    : "";
+}
+["b-usuario", "b-tipo", "b-interno"].forEach(id => $(id).addEventListener("change", () => bitacora().catch(x => alert(x.message))));
+
 $("dia").onchange = v1;
-$("aplicar").onclick = () => cargar().catch(x => alert(x.message));
+$("aplicar").onclick = () => { cargar().catch(x => alert(x.message)); bitacora().catch(x => alert(x.message)); };
 ["desde", "hasta", "momento"].forEach(id => $(id).addEventListener("change", enlaces));
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => D && pintar());
 
@@ -173,6 +204,7 @@ matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => D &&
   $("hasta").value = h;
   const ahoraLocal = new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
   $("momento").value = ahoraLocal; $("momento").max = ahoraLocal; $("desde").value = d.toISOString().slice(0, 10);
+  bitacora().catch(x => { $("b-tab").innerHTML = `<p class="msg err">${esc(x.message)}</p>`; });
   try { await cargar(); } catch (x) { $("vacio").hidden = false; $("vacio").className = "msg err"; $("vacio").textContent = x.message; }
 })();
 </script>

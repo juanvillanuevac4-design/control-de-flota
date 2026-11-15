@@ -159,8 +159,10 @@ function pintar() {
 }
 
 // ---- Guardado automático: cada cambio se envía al servidor (solo los buses que cambiaron).
-function cambiar(interno, valores) {
+const origenes = {};  // cómo se hizo el último cambio de cada bus, para la bitácora
+function cambiar(interno, valores, origen) {
   const f = filas.find(x => x.interno === interno);
+  origenes[interno] = origen;
   Object.assign(f, valores);
   if (f.operativo !== "Mantenimiento") f.motivo = "";
   $("guardado").textContent = "";
@@ -179,7 +181,7 @@ async function guardar(forzar) {
     pintar(); return;
   }
   guardando = true; resumen();
-  const envio = pend.map(f => ({interno: f.interno, terminal_real: f.terminal_real, operativo: f.operativo, motivo: f.motivo, observacion: f.observacion}));
+  const envio = pend.map(f => ({interno: f.interno, terminal_real: f.terminal_real, operativo: f.operativo, motivo: f.motivo, observacion: f.observacion, origen: origenes[f.interno] || "pantalla"}));
   const llaves = Object.fromEntries(pend.map(f => [f.interno, llave(f)]));
   try {
     const r = await api("/api/reporte", {fecha: datos.fecha, encargado: enc, filas: envio});
@@ -219,7 +221,7 @@ $("d-est").onchange = () => { $("l-mot").hidden = $("d-est").value !== "Mantenim
 $("dlg").addEventListener("close", () => {
   if ($("dlg").returnValue !== "ok" || !editando) return;
   cambiar(editando.interno, {terminal_real: $("d-term").value, operativo: $("d-est").value,
-    motivo: $("d-est").value === "Mantenimiento" ? $("d-mot").value : "", observacion: $("d-obs").value.trim()});
+    motivo: $("d-est").value === "Mantenimiento" ? $("d-mot").value : "", observacion: $("d-obs").value.trim()}, "detalle");
 });
 $("vC").addEventListener("click", e => {
   const b = e.target.closest(".chip");
@@ -234,7 +236,7 @@ $("vC").addEventListener("dblclick", e => {
   if (!b) return;
   clearTimeout(tClick);
   const f = filas.find(x => x.interno === b.dataset.i);
-  cambiar(f.interno, {operativo: f.operativo === "Operativo" ? "Mantenimiento" : "Operativo"});
+  cambiar(f.interno, {operativo: f.operativo === "Operativo" ? "Mantenimiento" : "Operativo"}, "doble_click");
 });
 
 // ---- Arrastrar: con mouse al mover; en pantalla táctil, manteniendo presionado medio segundo.
@@ -278,7 +280,7 @@ function terminarArrastre(e, soltar) {
   a.g.remove(); a.b.classList.remove("arrastrando");
   document.querySelectorAll("#vC .col.destino").forEach(c => c.classList.remove("destino"));
   const c = soltar && columnaEn(e.clientX, e.clientY);
-  if (c && c.dataset.t) cambiar(a.b.dataset.i, {terminal_real: c.dataset.t});
+  if (c && c.dataset.t) cambiar(a.b.dataset.i, {terminal_real: c.dataset.t}, "arrastre");
 }
 document.addEventListener("pointerup", e => terminarArrastre(e, true));
 document.addEventListener("pointercancel", e => terminarArrastre(e, false));
