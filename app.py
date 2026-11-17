@@ -377,6 +377,16 @@ def interno_real(valor):
     return inv.get(valor, valor)
 
 
+def sin_listado_para_invitado(f):
+    """El invitado ve totales y gráficos, pero ninguna descarga con el detalle por bus."""
+    @wraps(f)
+    def w(*a, **k):
+        if es_invitado():
+            return jsonify(error="Perfil invitado: puedes ver totales y gráficos, pero no el listado de buses."), 403
+        return f(*a, **k)
+    return w
+
+
 @app.after_request
 def internos_ficticios_para_invitado(resp):
     if resp.is_json and request.path.startswith("/api/") and es_invitado():
@@ -667,10 +677,13 @@ def api_dashboard():
     desde = parse_fecha(request.args.get("desde"), hasta - timedelta(days=29))
     with conectar() as cx:
         filas = estado_diario(cx, desde, hasta)
+    # El invitado recibe las mismas filas para contar, pero sin interno, placa ni observación.
+    listado = not es_invitado()
     return jsonify(
-        desde=desde.isoformat(), hasta=hasta.isoformat(), terminales=TERMINALES,
-        filas=[[f["fecha"].isoformat(), f["interno"], f["placa"], f["tipo_bus"], f["marca_chasis"],
-                f["terminal_real"], f["operativo"], f["observacion"], f["motivo"]] for f in filas],
+        desde=desde.isoformat(), hasta=hasta.isoformat(), terminales=TERMINALES, listado=listado,
+        filas=[[f["fecha"].isoformat(), f["interno"] if listado else "", f["placa"] if listado else "", f["tipo_bus"],
+                f["marca_chasis"], f["terminal_real"], f["operativo"], f["observacion"] if listado else "", f["motivo"]]
+               for f in filas],
     )
 
 
@@ -792,12 +805,15 @@ def api_bitacora():
             r["buses"].add(f["interno"])
     res = sorted(({**r, "buses": len(r["buses"]), "ultima": r["ultima"].astimezone(TZ).strftime("%d-%m-%Y %H:%M")}
                   for r in resumen.values()), key=lambda r: -r["acciones"])
-    return jsonify(total=len(filas), filas=[fila_bitacora(f) for f in filas[:300]], resumen=res,
+    listado = not es_invitado()
+    return jsonify(total=len(filas), filas=[fila_bitacora(f) for f in filas[:300]] if listado else [],
+                   listado=listado, resumen=res,
                    usuarios=[{"usuario": u["usuario"], "nombre": u["nombre"]} for u in usuarios])
 
 
 @app.get("/api/bitacora.<fmt>")
 @requiere_login
+@sin_listado_para_invitado
 def api_bitacora_descarga(fmt):
     with conectar() as cx:
         filas = [fila_bitacora(f) for f in consulta_bitacora(cx)]
@@ -850,6 +866,7 @@ def como_xlsx(columnas, filas, nombre, hoja):
 
 @app.get("/api/descarga.<fmt>")
 @requiere_login
+@sin_listado_para_invitado
 def api_descarga(fmt):
     filas = filas_descarga()
     with conectar() as cx:
@@ -859,6 +876,7 @@ def api_descarga(fmt):
 
 @app.get("/api/estado.<fmt>")
 @requiere_login
+@sin_listado_para_invitado
 def api_estado(fmt):
     m = momento_param()
     filas = filas_estado(m)
@@ -870,6 +888,7 @@ def api_estado(fmt):
 
 @app.get("/api/cambios.<fmt>")
 @requiere_login
+@sin_listado_para_invitado
 def api_cambios(fmt):
     filas = filas_cambios()
     with conectar() as cx:

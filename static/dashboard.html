@@ -23,6 +23,7 @@ h1{font-size:1.45rem;font-weight:800}
 .heat td.o{background:var(--ok-bg);color:var(--ok)} .heat td.m{background:var(--mt);color:#fff} .heat td.n{background:var(--surface2)}
 .heat td.d{font-weight:700;padding-left:6px;text-align:left}
 #bit td.mono{white-space:nowrap}
+body.invitado .solo-listado{display:none!important}
 .down-row{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end;justify-content:space-between}
 </style>
 </head>
@@ -31,19 +32,19 @@ h1{font-size:1.45rem;font-weight:800}
   <h1>Dashboard y descarga</h1>
 
   <section class="card pad down-row">
-    <h2 style="flex-basis:100%;font-size:1rem;margin:0">Descargar la base por rango de días</h2>
+    <h2 style="flex-basis:100%;font-size:1rem;margin:0" id="t-rango">Descargar la base por rango de días</h2>
     <div class="row">
       <label class="f">Desde<input type="date" id="desde"></label>
       <label class="f">Hasta<input type="date" id="hasta"></label>
       <button class="btn sec" id="aplicar">Actualizar</button>
     </div>
-    <div class="row">
+    <div class="row solo-listado">
       <a class="btn" id="d-xlsx" href="#">Descargar Excel</a>
       <a class="btn sec" id="d-csv" href="#">Descargar CSV</a>
     </div>
   </section>
 
-  <section class="card pad down-row">
+  <section class="card pad down-row solo-listado">
     <div style="flex-basis:100%"><h2 style="font-size:1rem;margin:0">Estado de la flota en una fecha y hora</h2>
       <p class="note">Descarga cómo estaba cada bus en el momento exacto que elijas, armado desde el historial de cambios (incluye quién hizo el último cambio).</p></div>
     <div class="row"><label class="f">Fecha y hora<input type="datetime-local" id="momento"></label></div>
@@ -64,7 +65,7 @@ h1{font-size:1.45rem;font-weight:800}
       <section class="card pad"><h2>Buses por Terminal Real</h2><div class="chart"><canvas id="c-term"></canvas></div></section>
       <section class="card pad"><h2>Por tipo de bus</h2><div class="scroll" id="t-tipo"></div></section>
     </div>
-    <section class="card pad"><h2>Buses en mantenimiento</h2><div class="scroll" id="t-mant"></div></section>
+    <section class="card pad"><h2 id="t-mant-tit">Buses en mantenimiento</h2><div class="scroll" id="t-mant"></div></section>
   </div>
 
   <!-- Bitácora: cada acción con quién, cuándo, qué había antes y qué quedó -->
@@ -75,9 +76,9 @@ h1{font-size:1.45rem;font-weight:800}
       <div class="row">
         <label class="f">Usuario<select id="b-usuario"><option value="">Todos</option></select></label>
         <label class="f">Tipo<select id="b-tipo"><option value="">Todo</option><option value="buses" selected>Cambios de buses</option><option value="admin">Administración</option><option value="sesion">Ingresos y salidas</option><option value="descargas">Descargas</option></select></label>
-        <label class="f">Interno<input id="b-interno" size="7" placeholder="Todos"></label>
+        <label class="f solo-listado">Interno<input id="b-interno" size="7" placeholder="Todos"></label>
       </div>
-      <div class="row">
+      <div class="row solo-listado">
         <a class="btn" id="b-xlsx" href="#">Descargar bitácora (Excel)</a>
         <a class="btn sec" id="b-csv" href="#">CSV</a>
         <a class="btn sec" id="h-xlsx" href="#" title="Estado completo de cada bus después de cada cambio">Historial de estados</a>
@@ -86,7 +87,7 @@ h1{font-size:1.45rem;font-weight:800}
     <h3 style="font-size:.9rem;margin:14px 0 6px">Resumen por usuario</h3>
     <div class="scroll" id="b-res"></div>
     <h3 style="font-size:.9rem;margin:14px 0 6px" id="b-tit">Acciones</h3>
-    <div class="scroll" style="max-height:480px" id="b-tab"></div>
+    <div class="scroll solo-listado" style="max-height:480px" id="b-tab"></div>
   </section>
 
 
@@ -174,6 +175,14 @@ function v1() {
     tipos.map(t => { const g = fs.filter(f => f[3] === t), o = g.filter(f => f[6] === "Operativo").length;
       return `<tr><td><b>${esc(t)}</b></td><td class="mono">${o}</td><td class="mono">${g.length - o}</td><td class="mono">${g.length}</td><td><span class="pill ${pct(o, g.length) >= 50 ? "p-ok" : "p-mt"}">${pct(o, g.length)}%</span></td></tr>`; }).join("") + "</tbody></table>";
   const m = fs.filter(f => f[6] === "Mantenimiento");
+  if (!D.listado) {  // invitado: solo cantidades por motivo, sin el detalle de cada bus
+    const mot = {}; m.forEach(f => { const k = f[8] || "Sin motivo"; mot[k] = (mot[k] || 0) + 1; });
+    $("t-mant-tit").textContent = "Buses en mantenimiento por motivo";
+    $("t-mant").innerHTML = m.length ? `<table><thead><tr><th>Motivo</th><th>Buses</th></tr></thead><tbody>` +
+      Object.entries(mot).sort((a, b) => b[1] - a[1]).map(([k, n]) => `<tr><td>${esc(k)}</td><td class="mono">${n}</td></tr>`).join("") + "</tbody></table>"
+      : '<p class="note">Ningún bus en mantenimiento este día.</p>';
+    return;
+  }
   $("t-mant").innerHTML = m.length ? `<table><thead><tr><th>Interno</th><th>Placa</th><th>Tipo</th><th>Marca</th><th>Terminal Real</th><th>Motivo</th><th>Observación</th></tr></thead><tbody>` +
     m.map(f => `<tr><td class="mono"><b>${esc(f[1])}</b></td><td class="mono">${esc(f[2])}</td><td>${esc(f[3])}</td><td>${esc(f[4])}</td><td>${esc(f[5])}</td><td>${esc(f[8] || "")}</td><td>${esc(f[7])}</td></tr>`).join("") + "</tbody></table>"
     : '<p class="note">Ningún bus en mantenimiento este día.</p>';
@@ -186,7 +195,7 @@ async function bitacora() {
   $("b-res").innerHTML = B.resumen.length ? `<table><thead><tr><th>Usuario</th><th>Nombre</th><th>Acciones</th><th>Cambios de buses</th><th>Buses distintos</th><th>Última acción</th></tr></thead><tbody>` +
     B.resumen.map(r => `<tr><td class="mono">${esc(r.usuario)}</td><td>${esc(r.nombre)}</td><td class="mono">${r.acciones}</td><td class="mono">${r.cambios_bus}</td><td class="mono">${r.buses}</td><td class="mono">${esc(r.ultima)}</td></tr>`).join("") + "</tbody></table>"
     : '<p class="note">Sin acciones en este período.</p>';
-  $("b-tit").textContent = B.total > B.filas.length ? `Últimas ${B.filas.length} de ${B.total} acciones (descarga para verlas todas)` : `${B.total} acciones`;
+  $("b-tit").textContent = !B.listado ? `${B.total} acciones en el período. El perfil invitado ve solo el resumen.` : B.total > B.filas.length ? `Últimas ${B.filas.length} de ${B.total} acciones (descarga para verlas todas)` : `${B.total} acciones`;
   $("b-tab").innerHTML = B.filas.length ? `<table><thead><tr><th>Fecha y hora</th><th>Usuario</th><th>Origen</th><th>Acción</th><th>Día</th><th>Interno</th><th>Campo</th><th>Antes</th><th>Después</th><th>Detalle</th></tr></thead><tbody>` +
     B.filas.map(f => `<tr><td class="mono">${esc(f[0])}</td><td>${esc(f[2])}</td><td>${esc(f[4])}</td><td>${esc(f[5])}${f[8] ? " · " + esc(f[8]) : ""}</td><td class="mono">${esc(f[6])}</td><td class="mono"><b>${esc(f[7])}</b></td><td>${esc(f[9])}</td><td>${esc(f[10])}</td><td><b>${esc(f[11])}</b></td><td class="note">${esc(f[12])}</td></tr>`).join("") + "</tbody></table>"
     : "";
@@ -199,7 +208,11 @@ $("aplicar").onclick = () => { cargar().catch(x => alert(x.message)); bitacora()
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => D && pintar());
 
 (async () => {
-  await barra("/dashboard");
+  const yo = await barra("/dashboard");
+  if (yo.rol === "invitado") {
+    document.body.classList.add("invitado");
+    $("t-rango").textContent = "Rango de días";
+  }
   const h = hoyISO(), d = new Date(h + "T12:00:00"); d.setDate(d.getDate() - 29);
   $("hasta").value = h;
   const ahoraLocal = new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 16);
