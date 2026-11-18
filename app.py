@@ -164,7 +164,18 @@ DROP TRIGGER IF EXISTS bitacora_solo_agregar ON bitacora;
 CREATE TRIGGER bitacora_solo_agregar BEFORE UPDATE OR DELETE ON bitacora FOR EACH ROW EXECUTE FUNCTION solo_agregar();
 DROP TRIGGER IF EXISTS bitacora_sin_vaciar ON bitacora;
 CREATE TRIGGER bitacora_sin_vaciar BEFORE TRUNCATE ON bitacora FOR EACH STATEMENT EXECUTE FUNCTION solo_agregar();
--- Flota requerida por terminal en hora punta: cada cambio es una fila nueva (vale la última por terminal).
+-- Parámetros editables por el administrador (p. ej. meta de disponibilidad): cada cambio es una fila nueva y vale la última.
+CREATE TABLE IF NOT EXISTS parametros (
+    id BIGSERIAL PRIMARY KEY,
+    ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+    clave TEXT NOT NULL,
+    valor TEXT NOT NULL
+);  -- quién lo cambió queda en la bitácora
+DROP TRIGGER IF EXISTS parametros_solo_agregar ON parametros;
+CREATE TRIGGER parametros_solo_agregar BEFORE UPDATE OR DELETE ON parametros FOR EACH ROW EXECUTE FUNCTION solo_agregar();
+DROP TRIGGER IF EXISTS parametros_sin_vaciar ON parametros;
+CREATE TRIGGER parametros_sin_vaciar BEFORE TRUNCATE ON parametros FOR EACH STATEMENT EXECUTE FUNCTION solo_agregar();
+-- En desuso desde 18-11-2026 (la meta pasó a ser % de disponibilidad en `parametros`); se conserva por su historial.
 CREATE TABLE IF NOT EXISTS metas (
     id BIGSERIAL PRIMARY KEY,
     ts TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -183,7 +194,7 @@ PERMISOS_APP = f"""
 GRANT USAGE ON SCHEMA public TO {ROL_APP};
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {ROL_APP};
 GRANT SELECT, INSERT, UPDATE ON buses, reportes, base, usuarios, motivos TO {ROL_APP};
-GRANT SELECT, INSERT ON cambios, bitacora, metas TO {ROL_APP};
+GRANT SELECT, INSERT ON cambios, bitacora, metas, parametros TO {ROL_APP};
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {ROL_APP};
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {ROL_APP};
 """
@@ -924,7 +935,7 @@ def estado_diario(cx, desde, hasta):
 
 
 # ---------- Tableros: evolución, mantenimiento, disponibilidad por hora y calidad del reporte ----------
-# Todo sale del historial `cambios` (solo-agregar), de `reportes` y de `metas`. Los buses se identifican
+# Todo sale del historial `cambios` (solo-agregar), de `reportes` y de `parametros` (meta). Los buses se identifican
 # solo por su número interno (sin placa). El invitado recibe solo agregados; la calidad del reporte es solo para admin.
 MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
 MAX_DIAS_TABLEROS = 731     # dos años
@@ -1040,7 +1051,7 @@ def _resumen_tiempos(eps, clave, fin_def):
 
 
 def _por_hora(eventos, semilla, desde, hasta, punta):
-    """% de buses operativos al final de cada hora de cada día, y operativos por terminal en hora punta.
+    """% de buses operativos al final de cada hora de cada día, y [operativos, total] por terminal en hora punta.
     En cada momento vale el último registro hasta ese momento del reporte más reciente
     (la misma regla que la descarga 'Estado a una fecha y hora')."""
     limite = ahora()
@@ -1066,8 +1077,8 @@ def _por_hora(eventos, semilla, desde, hasta, punta):
             if h in punta:
                 por_t = {}
                 for x in actual.values():
-                    if x[1] == "Operativo":
-                        _contar(por_t, x[2])
+                    c = por_t.setdefault(x[2], [0, 0])
+                    c[0] += x[1] == "Operativo"; c[1] += 1
                 pt[h] = por_t
         if any(v is not None for v in fila):
             dias.append({"fecha": d.isoformat(), "h": fila, "punta": pt})
@@ -1102,9 +1113,16 @@ def _eventos(cx, desde, hasta):
            WHERE c.fecha BETWEEN %s AND %s ORDER BY c.fecha, c.ts, c.id""", (desde, hasta)).fetchall()
 
 
-def metas_vigentes(cx):
-    return {r["terminal"]: r["requeridos"] for r in cx.execute(
-        "SELECT DISTINCT ON (terminal) terminal, requeridos FROM metas ORDER BY terminal, ts DESC, id DESC").fetchall()}
+META_DEFECTO = float(os.environ.get("META_DISPONIBILIDAD", "95"))
+
+
+def meta_disponibilidad(cx):
+    """Meta de disponibilidad de la flota (% de buses operativos). La fija el administrador; por defecto 95%."""
+    r = cx.execute("SELECT valor FROM parametros WHERE clave='meta_disponibilidad' ORDER BY ts DESC, id DESC LIMIT 1").fetchone()
+    try:
+        return float(r["valor"]) if r else META_DEFECTO
+    except ValueError:
+        return META_DEFECTO
 
 
 def _calidad(cx, desde, hasta, eventos):
@@ -1179,7 +1197,7 @@ def api_tableros():
         eventos = _eventos(cx, previo, hasta)
         semilla_ep = _semilla(cx, previo)
         semilla_h = _semilla(cx, h_desde)
-        metas = metas_vigentes(cx)
+        meta = meta_disponibilidad(cx)
         calidad = _calidad(cx, desde, hasta, [e for e in eventos if e["fecha"] >= desde]) if u["rol"] == "admin" else None
     listado = not es_invitado()
 
@@ -1233,19 +1251,23 @@ def api_tableros():
         _contar(ing_t, ep["terminal"])
     terminales = [{"terminal": t, "buses_prom": round(x["dias_bus"] / n_dias, 1), "op_prom": round(x["op"] / n_dias, 1),
                    "disp": round(x["op"] / x["dias_bus"] * 100, 1) if x["dias_bus"] else None, "ingresos": ing_t.get(t, 0),
-                   "mediana_h": tiempos_t.get(t, {}).get("mediana_h"), "reincidencias": reinc_t.get(t, 0), "meta": metas.get(t)}
+                   "mediana_h": tiempos_t.get(t, {}).get("mediana_h"), "reincidencias": reinc_t.get(t, 0)}
                   for t, x in term.items()]
 
-    # Disponibilidad por hora y hora punta frente a la flota requerida.
+    # Disponibilidad por hora y hora punta frente a la meta.
     dias_h, perfiles = _por_hora([e for e in eventos if e["fecha"] >= h_desde], semilla_h, h_desde, hasta, punta)
+    # % de cada terminal en cada hora punta frente a la meta de disponibilidad.
+    pct = lambda c: round(c[0] / c[1] * 100, 1) if c and c[1] else None
     cumplimiento = []
-    for t in TERMINALES + [k for k in metas if k not in TERMINALES]:
-        vals = [d["punta"][h].get(t, 0) for d in dias_h for h in d["punta"]]
-        meta = metas.get(t)
-        cumplimiento.append({"terminal": t, "meta": meta, "horas": len(vals),
-                             "prom": round(sum(vals) / len(vals), 1) if vals else None, "minimo": min(vals) if vals else None,
-                             "pct_cumple": round(sum(v >= meta for v in vals) / len(vals) * 100, 1) if vals and meta else None})
-    punta_dias = [{"fecha": d["fecha"], "min": {t: min((d["punta"][h].get(t, 0) for h in d["punta"]), default=None)
+    for t in TERMINALES:
+        vals = [v for d in dias_h for h in d["punta"] if (v := pct(d["punta"][h].get(t))) is not None]
+        cumplimiento.append({"terminal": t, "horas": len(vals), "prom": round(sum(vals) / len(vals), 1) if vals else None,
+                             "minimo": min(vals) if vals else None,
+                             "pct_cumple": round(sum(v >= meta for v in vals) / len(vals) * 100, 1) if vals else None})
+    tot_punta = [pct([sum(c[0] for c in d["punta"][h].values()), sum(c[1] for c in d["punta"][h].values())])
+                 for d in dias_h for h in d["punta"]]
+    tot_punta = [v for v in tot_punta if v is not None]
+    punta_dias = [{"fecha": d["fecha"], "min": {t: min((v for h in d["punta"] if (v := pct(d["punta"][h].get(t))) is not None), default=None)
                                                  for t in TERMINALES}} for d in dias_h if d["punta"]]
 
     ahora_ = ahora()
@@ -1268,7 +1290,10 @@ def api_tableros():
                    "por_motivo": sorted(_resumen_contar(abiertos, "motivo").items(), key=lambda kv: -kv[1])},
         terminales_cmp=terminales,
         horas={"desde": h_desde.isoformat(), "dias": [{"fecha": d["fecha"], "h": d["h"]} for d in dias_h], **perfiles},
-        punta={"cumplimiento": cumplimiento, "dias": punta_dias, "metas": metas},
+        meta=meta,
+        punta={"cumplimiento": cumplimiento, "dias": punta_dias,
+               "flota": {"prom": round(sum(tot_punta) / len(tot_punta), 1) if tot_punta else None,
+                         "pct_cumple": round(sum(v >= meta for v in tot_punta) / len(tot_punta) * 100, 1) if tot_punta else None}},
         calidad=calidad, generado=ahora_.strftime("%d-%m-%Y %H:%M"),
     )
 
@@ -1347,26 +1372,23 @@ def _resumen_contar(eps, clave):
     return out
 
 
-@app.post("/api/admin/metas")
+@app.post("/api/admin/meta")
 @requiere_admin
-def api_admin_metas():
-    """Flota requerida en hora punta por terminal ({terminal, requeridos}). Cada cambio es una fila nueva."""
+def api_admin_meta():
+    """Meta de disponibilidad de la flota en % ({meta}). Cada cambio es una fila nueva y queda en la bitácora."""
     d = request.get_json(silent=True) or {}
-    t = d.get("terminal")
-    if t not in TERMINALES:
-        return jsonify(error="Terminal no válida."), 400
     try:
-        n = int(d.get("requeridos"))
-        assert 0 <= n <= 1000
+        n = round(float(str(d.get("meta")).replace(",", ".")), 1)
+        assert 0 < n <= 100
     except (TypeError, ValueError, AssertionError):
-        return jsonify(error="Escribe un número de buses entre 0 y 1000."), 400
+        return jsonify(error="Escribe un porcentaje entre 0 y 100."), 400
     with conectar() as cx:
-        antes = metas_vigentes(cx).get(t)
+        antes = meta_disponibilidad(cx)
         if antes == n:
             return jsonify(ok=True)
-        cx.execute("INSERT INTO metas (terminal, requeridos) VALUES (%s,%s)", (t, n))
-        registrar(cx, "Meta de flota en hora punta", "Administración", usuario_actual(), objeto=t,
-                  campo="Buses requeridos", antes="" if antes is None else antes, despues=n)
+        cx.execute("INSERT INTO parametros (clave, valor) VALUES ('meta_disponibilidad', %s)", (str(n),))
+        registrar(cx, "Meta de disponibilidad", "Administración", usuario_actual(), objeto="Flota",
+                  campo="Meta de disponibilidad (%)", antes=f"{antes:g}", despues=f"{n:g}")
     return jsonify(ok=True)
 
 
@@ -1575,9 +1597,8 @@ def api_admin_datos():
                ORDER BY activo DESC, CASE WHEN interno ~ '^[0-9]+$' THEN interno::int END, interno"""
         ).fetchall()
         ms = cx.execute("SELECT id, nombre, activo FROM motivos ORDER BY activo DESC, orden, nombre").fetchall()
-        metas = metas_vigentes(cx)
-    return jsonify(usuarios=us, buses=bs, motivos=ms, yo=usuario_actual(), terminales=TERMINALES, metas=metas,
-                   horas_punta=_horas_punta())
+        meta = meta_disponibilidad(cx)
+    return jsonify(usuarios=us, buses=bs, motivos=ms, yo=usuario_actual(), meta=meta)
 
 
 @app.post("/api/admin/usuarios")
