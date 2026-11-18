@@ -50,7 +50,7 @@ DISPONIBLES = {"Operativo"}
 # Columnas de la hoja "Base"
 COLUMNAS_BASE = ["Fecha", "Hora", "Encargado", "PLACA", "INTERNO", "TIPO BUS", "TIPO FLOTA", "MARCA CHASIS",
                  "TERMINAL OP", "Terminal Real", "Operativo", "Motivo mantenimiento", "Observacion",
-                 "Último cambio", "Cambiado por"]
+                 "Último cambio", "Cambiado por", "Sistema"]
 COLUMNAS_CAMBIOS = ["Fecha y hora", "Fecha reporte", "Tipo", "Usuario", "Nombre", "PLACA", "INTERNO", "TIPO BUS",
                     "TIPO FLOTA", "MARCA CHASIS", "TERMINAL OP", "Terminal Real", "Operativo", "Motivo mantenimiento",
                     "Observacion"]
@@ -192,6 +192,20 @@ DROP TRIGGER IF EXISTS metas_solo_agregar ON metas;
 CREATE TRIGGER metas_solo_agregar BEFORE UPDATE OR DELETE ON metas FOR EACH ROW EXECUTE FUNCTION solo_agregar();
 DROP TRIGGER IF EXISTS metas_sin_vaciar ON metas;
 CREATE TRIGGER metas_sin_vaciar BEFORE TRUNCATE ON metas FOR EACH STATEMENT EXECUTE FUNCTION solo_agregar();
+-- Sistema del bus al que pertenece cada motivo (18-11-2026). Solo agregar: vale la última fila de cada motivo.
+-- Los tableros agrupan por sistema; los reportes guardan el motivo tal como se escribió.
+CREATE TABLE IF NOT EXISTS motivo_sistema (
+    id BIGSERIAL PRIMARY KEY,
+    ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+    motivo TEXT NOT NULL,
+    sistema TEXT NOT NULL
+);  -- quién lo asignó queda en la bitácora
+DROP TRIGGER IF EXISTS motivo_sistema_solo_agregar ON motivo_sistema;
+CREATE TRIGGER motivo_sistema_solo_agregar BEFORE UPDATE OR DELETE ON motivo_sistema FOR EACH ROW EXECUTE FUNCTION solo_agregar();
+DROP TRIGGER IF EXISTS motivo_sistema_sin_vaciar ON motivo_sistema;
+CREATE TRIGGER motivo_sistema_sin_vaciar BEFORE TRUNCATE ON motivo_sistema FOR EACH STATEMENT EXECUTE FUNCTION solo_agregar();
+CREATE OR REPLACE VIEW motivo_sistema_actual AS
+    SELECT DISTINCT ON (motivo) motivo, sistema FROM motivo_sistema ORDER BY motivo, ts DESC, id DESC;
 """
 
 # Permisos del rol de la app: sin DELETE en ninguna tabla, y en cambios y bitácora solo leer y agregar.
@@ -200,7 +214,8 @@ PERMISOS_APP = f"""
 GRANT USAGE ON SCHEMA public TO {ROL_APP};
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {ROL_APP};
 GRANT SELECT, INSERT, UPDATE ON buses, reportes, base, usuarios, motivos TO {ROL_APP};
-GRANT SELECT, INSERT ON cambios, bitacora, metas, parametros TO {ROL_APP};
+GRANT SELECT, INSERT ON cambios, bitacora, metas, parametros, motivo_sistema TO {ROL_APP};
+GRANT SELECT ON motivo_sistema_actual TO {ROL_APP};
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {ROL_APP};
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {ROL_APP};
 """
@@ -348,6 +363,8 @@ def _iniciar_bd():
             app.logger.info("Bitácora: %s correcciones anteriores registradas", len(corregidas))
         if cx.execute("INSERT INTO migraciones (nombre) VALUES ('carga_excel_14_11') ON CONFLICT DO NOTHING RETURNING 1").fetchone():
             _carga_excel_14_11(cx)
+        if cx.execute("INSERT INTO migraciones (nombre) VALUES ('motivos_por_sistema') ON CONFLICT DO NOTHING RETURNING 1").fetchone():
+            _motivos_por_sistema(cx)
         cx.execute(SCHEMA_PROTEGER_CAMBIOS)
         hay_admin = cx.execute("SELECT 1 FROM usuarios WHERE rol='admin' AND activo").fetchone()
         if not hay_admin and ADMIN_CLAVE:
@@ -445,6 +462,66 @@ def _carga_excel_14_11(cx):
         resumen.append(f"{r['fecha']:%d-%m}: {aplicados}")
     app.logger.info("Carga Excel 14-11: buses actualizados por reporte: %s. No se pisaron (cambiados a mano después "
                     "del 14-11): %s", ", ".join(resumen), json.dumps(respetados) if respetados else "ninguno")
+
+
+def _motivos_por_sistema(cx):
+    """Una sola vez (pedido de Juan Patricio, 18-11-2026): motivos agrupados por sistema del bus.
+    1) Registra a qué sistema pertenece cada motivo anterior (tabla motivo_sistema, solo agregar).
+    2) La lista desplegable pasa a tener solo los sistemas; los motivos anteriores quedan inactivos.
+    3) En el reporte más reciente, los buses en mantenimiento con un motivo anterior pasan al sistema como
+       un cambio nuevo, y el motivo anterior queda en la observación. Los reportes anteriores no se tocan."""
+    from motivos_sistema import MAPA, SISTEMAS
+    n = ahora()
+    u = {"usuario": "sistema", "nombre": "Motivos por sistema (Juan Patricio)", "rol": "sistema"}
+    origen, detalle = "Corrección de datos", "Motivos agrupados por sistema del bus, pedido por Juan Patricio el 18-11-2026"
+    motivos = {m["nombre"]: m for m in cx.execute("SELECT * FROM motivos").fetchall()}
+    por_norma = {_normalizar(k): v for k, v in MAPA.items()}
+    mapa = {nombre: por_norma[_normalizar(nombre)] for nombre in motivos if _normalizar(nombre) in por_norma}
+    sin_sistema = sorted(m for m in motivos if m not in mapa and m not in SISTEMAS)
+    # 1) Equivalencias
+    cx.cursor().executemany("INSERT INTO motivo_sistema (ts, motivo, sistema) VALUES (%s,%s,%s)",
+                            [(n, m, s) for m, s in sorted(mapa.items())])
+    registrar_varias(cx, [dict(accion="Motivo asignado a sistema", origen=origen, objeto=m, campo="Sistema",
+                               antes="", despues=s, detalle=detalle) for m, s in sorted(mapa.items())], u, n)
+    # 2) Lista desplegable
+    for i, s in enumerate(SISTEMAS):
+        e = motivos.get(s)
+        if not e:
+            cx.execute("INSERT INTO motivos (nombre, orden) VALUES (%s,%s)", (s, i))
+            registrar(cx, "Motivo agregado", origen, u, n, objeto=s, detalle=detalle)
+        else:
+            cx.execute("UPDATE motivos SET orden=%s, activo=TRUE WHERE id=%s", (i, e["id"]))
+            if not e["activo"]:
+                registrar(cx, "Motivo activado", origen, u, n, objeto=s, campo="Estado", antes="Inactivo",
+                          despues="Activo", detalle=detalle)
+    for m, e in motivos.items():
+        if m in mapa and m not in SISTEMAS and e["activo"]:
+            cx.execute("UPDATE motivos SET activo=FALSE WHERE id=%s", (e["id"],))
+            registrar(cx, "Motivo desactivado", origen, u, n, objeto=m, campo="Estado", antes="Activo",
+                      despues="Inactivo", detalle=f"Pasa a {mapa[m]}. {detalle}")
+    # 3) Reporte más reciente
+    r = cx.execute("SELECT id, fecha FROM reportes ORDER BY fecha DESC LIMIT 1").fetchone()
+    aplicados = 0
+    if r:
+        for a in cx.execute("SELECT * FROM base WHERE reporte_id=%s AND operativo='Mantenimiento'", (r["id"],)).fetchall():
+            s = mapa.get(a["motivo"])
+            if not s or s == a["motivo"]:
+                continue
+            obs = (a["motivo"] + (" · " + a["observacion"] if a["observacion"] else ""))[:500]
+            registrar_varias(cx, [dict(accion="Cambio de bus", origen=origen, fecha_reporte=r["fecha"], interno=a["interno"],
+                                       campo=NOMBRE_CAMPO[c], antes=a[c] or "", despues=v, detalle=detalle)
+                                  for c, v in (("motivo", s), ("observacion", obs))], u, n)
+            cx.execute("""UPDATE base SET motivo=%s, observacion=%s, cambio_ts=%s, cambio_por=%s
+                          WHERE reporte_id=%s AND interno=%s""", (s, obs, n, u["nombre"], r["id"], a["interno"]))
+            cx.execute("""INSERT INTO cambios (ts, fecha, tipo, usuario, nombre, interno, terminal_real, operativo, motivo, observacion)
+                          VALUES (%s,%s,'cambio',%s,%s,%s,%s,'Mantenimiento',%s,%s)""",
+                       (n, r["fecha"], u["usuario"], u["nombre"], a["interno"], a["terminal_real"], s, obs))
+            aplicados += 1
+        if aplicados:
+            cx.execute("UPDATE reportes SET modificado_por=%s, modificado=now() WHERE id=%s", (u["usuario"], r["id"]))
+    app.logger.info("Motivos por sistema: %s equivalencias, %s buses pasados al sistema en el reporte del %s. "
+                    "Motivos sin sistema (quedan igual): %s", len(mapa), aplicados, r and r["fecha"],
+                    ", ".join(sin_sistema) or "ninguno")
 
 
 def parse_fecha(s, defecto=None):
@@ -1006,7 +1083,8 @@ def api_dashboard():
         desde=desde.isoformat(), hasta=hasta.isoformat(), terminales=TERMINALES, listado=listado,
         estados=ESTADOS, disponibles=sorted(DISPONIBLES),
         filas=[[f["fecha"].isoformat(), f["interno"] if listado else "", f["placa"] if listado else "", f["tipo_bus"],
-                f["marca_chasis"], f["terminal_real"], f["operativo"], f["observacion"] if listado else "", f["motivo"]]
+                f["marca_chasis"], f["terminal_real"], f["operativo"], f["observacion"] if listado else "", f["sistema"],
+                f["motivo"] if listado else ""]
                for f in filas],
     )
 
@@ -1015,9 +1093,11 @@ def estado_diario(cx, desde, hasta):
     """Estado de cada bus al cierre de cada día, armado desde el historial (último registro de cada bus en ese reporte)."""
     return cx.execute(
         """SELECT x.*, r.hora, r.encargado, b.placa, b.tipo_bus, b.tipo_flota, b.marca_chasis, b.terminal_op,
-                  ult.ts AS cambio_ts, ult.nombre AS cambio_por
+                  ult.ts AS cambio_ts, ult.nombre AS cambio_por,
+                  coalesce(ms.sistema, x.motivo) AS sistema
            FROM (SELECT DISTINCT ON (fecha, interno) fecha, interno, terminal_real, operativo, motivo, observacion
                  FROM cambios WHERE fecha BETWEEN %s AND %s ORDER BY fecha, interno, ts DESC, id DESC) x
+           LEFT JOIN motivo_sistema_actual ms ON ms.motivo = x.motivo
            JOIN buses b ON b.interno = x.interno
            JOIN reportes r ON r.fecha = x.fecha
            LEFT JOIN LATERAL (SELECT c.ts, c.nombre FROM cambios c
@@ -1073,7 +1153,7 @@ def _evolucion(diario, grano):
             x["op"] += 1
         else:
             x["mt"] += 1
-            _contar(x["mot"], f["motivo"] or "Sin motivo")
+            _contar(x["mot"], f["sistema"] or "Sin motivo")
     per = {}
     for d in sorted(dias):
         clave, etiqueta = _periodo(d, grano)
@@ -1198,15 +1278,19 @@ def _aplicar(actual, e):
 
 def _semilla(cx, antes_de):
     return {r["interno"]: r for r in cx.execute(
-        """SELECT DISTINCT ON (c.interno) c.interno, c.operativo, c.motivo, c.terminal_real FROM cambios c
+        """SELECT DISTINCT ON (c.interno) c.interno, c.operativo, coalesce(ms.sistema, c.motivo) AS motivo,
+                  c.terminal_real FROM cambios c
            JOIN buses b ON b.interno = c.interno AND b.activo
+           LEFT JOIN motivo_sistema_actual ms ON ms.motivo = c.motivo
            WHERE c.fecha < %s ORDER BY c.interno, c.fecha DESC, c.ts DESC, c.id DESC""", (antes_de,)).fetchall()}
 
 
 def _eventos(cx, desde, hasta):
     return cx.execute(
-        """SELECT c.interno, c.fecha, c.ts, c.tipo, c.usuario, c.nombre, c.operativo, c.motivo, c.terminal_real FROM cambios c
+        """SELECT c.interno, c.fecha, c.ts, c.tipo, c.usuario, c.nombre, c.operativo,
+                  coalesce(ms.sistema, c.motivo) AS motivo, c.terminal_real FROM cambios c
            JOIN buses b ON b.interno = c.interno AND b.activo
+           LEFT JOIN motivo_sistema_actual ms ON ms.motivo = c.motivo
            WHERE c.fecha BETWEEN %s AND %s ORDER BY c.fecha, c.ts, c.id""", (desde, hasta)).fetchall()
 
 
@@ -1321,7 +1405,7 @@ def api_tableros():
         _contar(pareto, ep["motivo"])
     for f in diario:
         if f["operativo"] == "Mantenimiento":
-            _contar(dias_mt, f["interno"]); _contar(dias_mt_mot, f["motivo"] or "Sin motivo")
+            _contar(dias_mt, f["interno"]); _contar(dias_mt_mot, f["sistema"] or "Sin motivo")
     reit = sorted(((i, b) for i, b in por_bus.items() if b["ingresos"] >= umbral),
                   key=lambda x: (-x[1]["ingresos"], -dias_mt.get(x[0], 0)))
     distrib = {}
@@ -1497,7 +1581,7 @@ def filas_descarga():
     return [[f["fecha"], f["hora"].strftime("%H:%M"), f["encargado"], f["placa"], f["interno"], f["tipo_bus"],
              f["tipo_flota"], f["marca_chasis"], f["terminal_op"], f["terminal_real"], f["operativo"], f["motivo"],
              f["observacion"], f["cambio_ts"].astimezone(TZ).strftime("%d-%m-%Y %H:%M") if f["cambio_ts"] else "",
-             f["cambio_por"]] for f in filas]
+             f["cambio_por"], f["sistema"] if f["operativo"] == "Mantenimiento" else ""] for f in filas]
 
 
 def momento_param():
