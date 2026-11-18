@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Aviso de privacidad · Control de Flota</title>
+<link rel="stylesheet" href="/static/base.css">
+<style>
+.box{max-width:720px;margin:32px auto;padding:24px;display:flex;flex-direction:column;gap:10px;line-height:1.5}
+h1{font-size:1.35rem;font-weight:800} h2{font-size:1.02rem;font-weight:700;margin-top:8px}
+ul{margin:0;padding-left:20px}
+</style>
+</head>
+<body>
+<div class="wrap"><main class="box card">
+<h1>Aviso de privacidad</h1>
+<p class="note">Control de Flota registra la distribución diaria de los buses del depósito. Para eso trata algunos datos personales de quienes lo usan.</p>
+
+<h2>Responsable</h2>
+<p>{{PRIVACIDAD_RESPONSABLE}}. Contacto para consultas y para ejercer tus derechos: {{PRIVACIDAD_CONTACTO}}.</p>
+
+<h2>Qué datos se tratan</h2>
+<ul>
+<li>Tu nombre, tu nombre de usuario y tu rol.</li>
+<li>Tu contraseña, guardada solo como un hash (nadie puede leerla, tampoco el administrador).</li>
+<li>Un registro de cada acción que haces en el sistema: ingresos y salidas, cambios en el estado de los buses, cambios de administración y descargas, con fecha y hora, y el valor anterior y el nuevo.</li>
+</ul>
+<p>No se guardan tu dirección IP, tu ubicación ni datos de tu dispositivo. La IP se mantiene solo en memoria por 15 minutos para frenar intentos de ingreso no autorizados.</p>
+
+<h2>Para qué y con qué base</h2>
+<p>Para operar el control diario de la flota, saber quién hizo cada cambio y cuándo (trazabilidad) y proteger el sistema. La base es tu relación laboral o de servicios con el responsable y su interés legítimo en la seguridad y trazabilidad de la operación. Los datos no se usan para otros fines ni se venden.</p>
+
+<h2>Quién más accede</h2>
+<p>Los administradores del sistema. El servicio funciona en proveedores de infraestructura (Render para la aplicación y Neon para la base de datos), que pueden almacenar los datos fuera de Chile. La página carga tipografías desde Google Fonts, que recibe la dirección IP del navegador.</p>
+
+<h2>Cuánto tiempo se guardan</h2>
+<p>{{PRIVACIDAD_RETENCION}}. El registro de acciones no se puede editar ni borrar desde el sistema, para que sirva como respaldo confiable.</p>
+
+<h2>Tus derechos</h2>
+<ul>
+<li><b>Acceso:</b> con tu sesión iniciada, usa "Mis datos" en la barra superior para descargar tus datos y todas tus acciones registradas.</li>
+<li><b>Rectificación, supresión, oposición, bloqueo y portabilidad:</b> escríbele al contacto indicado arriba. Si un dato del registro de acciones debe conservarse por trazabilidad o por obligación legal, se te explicará el motivo.</li>
+<li>Si no quedas conforme con la respuesta, puedes reclamar ante la Agencia de Protección de Datos Personales.</li>
+</ul>
+
+<h2>Seguridad</h2>
+<p>Conexión cifrada (HTTPS), contraseñas con hash, límite de intentos de ingreso, permisos por rol revisados en el servidor y registro de acciones que no se puede alterar. Si ocurre una vulneración que afecte tus datos, se te informará.</p>
+<p class="note"><a href="/login">Volver</a></p>
+</main></div>
+</body>
+</html>
