@@ -17,6 +17,7 @@ Registro diario de la distribución de la flota del depósito, basado en `Distru
 
 - `/` Reporte diario en vista **Por terminal** (propuesta C elegida; las propuestas A Tabla y B Tarjetas quedan en el historial de git).
 - `/dashboard` Descarga (Excel o CSV por rango de fechas) y dashboard **Foto del día** con etiquetas de datos (propuestas 2 y 3 en el historial de git).
+- `/tableros` Tableros (todo sale del historial `cambios`, solo-agregar): evolución por estatus por día, semana o mes; mantenimiento por motivo; % de disponibilidad por hora (curva hábil/fin de semana y mapa de calor día × hora); hora punta frente a la flota requerida por terminal; tiempo fuera de servicio por motivo; Pareto de motivos; buses reiterativos; reincidencia ≤ 7 días tras volver a operar; buses detenidos hace más tiempo; comparación entre terminales; calidad del reporte (solo admin). Los buses se identifican solo por interno; el invitado ve solo agregados.
 - `/admin` Usuarios y contraseñas (crear, cambiar rol, activar/desactivar, cambiar clave) y nómina de buses.
 
 ## Configuración (Render)
@@ -27,6 +28,7 @@ Registro diario de la distribución de la flota del depósito, basado en `Distru
 | `ADMIN_USUARIO` / `ADMIN_CLAVE` | Administrador inicial (se crea solo si no existe ningún administrador) |
 | `SECRET_KEY` | Firma de sesión (Render la genera) |
 | `ZONA_HORARIA` | `America/Santiago` |
+| `HORAS_PUNTA` | Horas punta para Tableros, por defecto `6-8,17-19` (cada hora cubre HH:00 a HH:59) |
 
 ## Ejecutar localmente
 
