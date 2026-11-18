@@ -187,7 +187,7 @@ function v1() {
     return;
   }
   $("t-mant").innerHTML = m.length ? `<table><thead><tr><th>Interno</th><th>Placa</th><th>Tipo</th><th>Marca</th><th>Terminal Real</th><th>Motivo</th><th>Observación</th></tr></thead><tbody>` +
-    m.map(f => `<tr><td class="mono"><b>${esc(f[1])}</b></td><td class="mono">${esc(f[2])}</td><td>${esc(f[3])}</td><td>${esc(f[4])}</td><td>${esc(f[5])}</td><td>${esc(f[8] || "")}</td><td>${esc(f[7])}</td></tr>`).join("") + "</tbody></table>"
+    m.map(f => `<tr><td class="mono"><b>${esc(f[1])}</b></td><td class="mono">${esc(f[2])}</td><td>${esc(f[3])}</td><td>${esc(f[4])}</td><td>${esc(f[5])}</td><td>${esc(f[8] || "")}${f[9] && f[9] !== f[8] ? ` <span class="note">(${esc(f[9])})</span>` : ""}</td><td>${esc(f[7])}</td></tr>`).join("") + "</tbody></table>"
     : '<p class="note">Ningún bus en mantenimiento este día.</p>';
 }
 
