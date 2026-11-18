@@ -105,9 +105,9 @@ function enlaces() {
   $("h-xlsx").href = "/api/cambios.xlsx" + q;
   const b = q + `&usuario=${encodeURIComponent($("b-usuario").value)}&tipo=${$("b-tipo").value}&interno=${encodeURIComponent($("b-interno").value.trim())}`;
   $("b-xlsx").href = "/api/bitacora.xlsx" + b; $("b-csv").href = "/api/bitacora.csv" + b;
-  return b;
   const m = "?momento=" + encodeURIComponent($("momento").value);
   $("e-xlsx").href = "/api/estado.xlsx" + m; $("e-csv").href = "/api/estado.csv" + m;
+  return b;
 }
 async function cargar() {
   enlaces();
