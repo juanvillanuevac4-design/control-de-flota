@@ -164,6 +164,17 @@ DROP TRIGGER IF EXISTS bitacora_solo_agregar ON bitacora;
 CREATE TRIGGER bitacora_solo_agregar BEFORE UPDATE OR DELETE ON bitacora FOR EACH ROW EXECUTE FUNCTION solo_agregar();
 DROP TRIGGER IF EXISTS bitacora_sin_vaciar ON bitacora;
 CREATE TRIGGER bitacora_sin_vaciar BEFORE TRUNCATE ON bitacora FOR EACH STATEMENT EXECUTE FUNCTION solo_agregar();
+-- Flota requerida por terminal en hora punta: cada cambio es una fila nueva (vale la última por terminal).
+CREATE TABLE IF NOT EXISTS metas (
+    id BIGSERIAL PRIMARY KEY,
+    ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+    terminal TEXT NOT NULL,
+    requeridos INT NOT NULL CHECK (requeridos >= 0)
+);  -- quién la cambió queda en la bitácora
+DROP TRIGGER IF EXISTS metas_solo_agregar ON metas;
+CREATE TRIGGER metas_solo_agregar BEFORE UPDATE OR DELETE ON metas FOR EACH ROW EXECUTE FUNCTION solo_agregar();
+DROP TRIGGER IF EXISTS metas_sin_vaciar ON metas;
+CREATE TRIGGER metas_sin_vaciar BEFORE TRUNCATE ON metas FOR EACH STATEMENT EXECUTE FUNCTION solo_agregar();
 """
 
 # Permisos del rol de la app: sin DELETE en ninguna tabla, y en cambios y bitácora solo leer y agregar.
@@ -172,7 +183,7 @@ PERMISOS_APP = f"""
 GRANT USAGE ON SCHEMA public TO {ROL_APP};
 REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {ROL_APP};
 GRANT SELECT, INSERT, UPDATE ON buses, reportes, base, usuarios, motivos TO {ROL_APP};
-GRANT SELECT, INSERT ON cambios, bitacora TO {ROL_APP};
+GRANT SELECT, INSERT ON cambios, bitacora, metas TO {ROL_APP};
 REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {ROL_APP};
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {ROL_APP};
 """
@@ -515,7 +526,7 @@ def cabeceras_seguridad(resp):
     h["Cross-Origin-Opener-Policy"] = "same-origin"
     if request.is_secure or EN_RENDER:
         h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    if request.path.startswith("/api/") or request.path in ("/", "/dashboard", "/admin", "/login", "/privacidad"):
+    if request.path.startswith("/api/") or request.path in ("/", "/dashboard", "/tableros", "/admin", "/login", "/privacidad"):
         h["Cache-Control"] = "no-store"  # datos de la flota y del personal: que no queden en cachés
     return resp
 
@@ -577,6 +588,11 @@ def index():
 @app.get("/dashboard")
 def dashboard_page():
     return pagina("dashboard.html")
+
+
+@app.get("/tableros")
+def tableros_page():
+    return pagina("tableros.html")
 
 
 @app.get("/admin")
@@ -902,6 +918,378 @@ def estado_diario(cx, desde, hasta):
     ).fetchall()
 
 
+# ---------- Tableros: evolución, mantenimiento, disponibilidad por hora y calidad del reporte ----------
+# Todo sale del historial `cambios` (solo-agregar), de `reportes` y de `metas`. Los buses se identifican
+# solo por su número interno (sin placa). El invitado recibe solo agregados; la calidad del reporte es solo para admin.
+MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"]
+MAX_DIAS_TABLEROS = 731     # dos años
+MAX_DIAS_HORAS = 120        # la disponibilidad por hora usa los últimos 120 días del rango
+DIAS_PREVIOS = 180          # historial previo para reconstruir episodios que empezaron antes del rango
+DIAS_REINCIDENCIA = 7
+
+
+def _horas_punta():
+    """HORAS_PUNTA="6-8,17-19": horas (0 a 23) consideradas punta. Cada hora cubre de HH:00 a HH:59."""
+    hs = set()
+    for parte in os.environ.get("HORAS_PUNTA", "6-8,17-19").split(","):
+        try:
+            a, _, b = parte.strip().partition("-")
+            hs.update(range(int(a), int(b or a) + 1))
+        except ValueError:
+            pass
+    return sorted(h for h in hs if 0 <= h <= 23)
+
+
+def _periodo(d, grano):
+    if grano == "semana":
+        ini = d - timedelta(days=d.weekday())
+        return ini.isoformat(), f"Sem {ini.isocalendar()[1]} · {ini:%d-%m}"
+    if grano == "mes":
+        return f"{d:%Y-%m}", f"{MESES[d.month - 1]} {d.year}"
+    return d.isoformat(), f"{d:%d-%m}"
+
+
+def _contar(dic, k, n=1):
+    dic[k] = dic.get(k, 0) + n
+
+
+def _evolucion(diario, grano):
+    """Promedio diario de buses operativos y en mantenimiento por período, y de buses en mantenimiento por motivo."""
+    dias = {}
+    for f in diario:
+        x = dias.setdefault(f["fecha"], {"op": 0, "mt": 0, "mot": {}})
+        if f["operativo"] == "Operativo":
+            x["op"] += 1
+        else:
+            x["mt"] += 1
+            _contar(x["mot"], f["motivo"] or "Sin motivo")
+    per = {}
+    for d in sorted(dias):
+        clave, etiqueta = _periodo(d, grano)
+        p = per.setdefault(clave, {"etiqueta": etiqueta, "desde": d, "dias": 0, "op": 0, "mt": 0, "mot": {}})
+        p["dias"] += 1; p["op"] += dias[d]["op"]; p["mt"] += dias[d]["mt"]; p["hasta"] = d
+        for k, n in dias[d]["mot"].items():
+            _contar(p["mot"], k, n)
+    out = []
+    for p in per.values():
+        n, t = p["dias"], p["op"] + p["mt"]
+        out.append({"etiqueta": p["etiqueta"], "desde": p["desde"].isoformat(), "hasta": p["hasta"].isoformat(), "dias": n,
+                    "op": round(p["op"] / n, 1), "mt": round(p["mt"] / n, 1), "disp": round(p["op"] / t * 100, 1) if t else None,
+                    "motivos": {k: round(v / n, 1) for k, v in p["mot"].items()}})
+    return out
+
+
+def _episodios(eventos, semilla, inicio_hist):
+    """Episodios de mantenimiento: desde que un bus pasa a Mantenimiento hasta que vuelve a Operativo.
+    Los cambios se recorren por día del reporte y, dentro del día, por hora. Una corrección hecha después
+    sobre un día pasado cuenta al cierre de ese día (no a la hora en que se corrigió)."""
+    cierre, abiertos, eps = {}, {}, []
+    for i, s in semilla.items():
+        cierre[i] = s["operativo"]
+        if s["operativo"] == "Mantenimiento":
+            abiertos[i] = {"interno": i, "inicio": inicio_hist, "fin": None, "motivo": s["motivo"] or "Sin motivo",
+                           "terminal": s["terminal_real"], "desde_antes": True}
+            eps.append(abiertos[i])
+    for e in eventos:
+        i = e["interno"]
+        t = min(e["ts"], datetime(e["fecha"].year, e["fecha"].month, e["fecha"].day, 23, 59, 59, tzinfo=TZ))
+        if e["operativo"] == "Mantenimiento":
+            if i not in abiertos:
+                abiertos[i] = {"interno": i, "inicio": t, "fin": None, "motivo": e["motivo"] or "Sin motivo",
+                               "terminal": e["terminal_real"], "desde_antes": cierre.get(i) is None}
+                eps.append(abiertos[i])
+            elif e["motivo"]:
+                abiertos[i]["motivo"] = e["motivo"]   # el motivo se suele precisar después: vale el último
+        elif i in abiertos:
+            ep = abiertos.pop(i)
+            ep["fin"] = max(t, ep["inicio"])
+        cierre[i] = e["operativo"]
+    return eps
+
+
+def _horas(ep, fin_def):
+    return ((ep["fin"] or fin_def) - ep["inicio"]).total_seconds() / 3600
+
+
+def _mediana(vs):
+    vs = sorted(vs)
+    if not vs:
+        return None
+    m = len(vs) // 2
+    return round(vs[m] if len(vs) % 2 else (vs[m - 1] + vs[m]) / 2, 1)
+
+
+def _resumen_tiempos(eps, clave, fin_def):
+    """Tiempo fuera de servicio por motivo o terminal: episodios terminados (mediana y promedio) y abiertos."""
+    g = {}
+    for ep in eps:
+        x = g.setdefault(ep[clave], {"cerrados": [], "abiertos": 0})
+        if ep["fin"]:
+            x["cerrados"].append(_horas(ep, fin_def))
+        else:
+            x["abiertos"] += 1
+    out = [{"nombre": k, "reparados": len(v["cerrados"]), "abiertos": v["abiertos"], "mediana_h": _mediana(v["cerrados"]),
+            "promedio_h": round(sum(v["cerrados"]) / len(v["cerrados"]), 1) if v["cerrados"] else None,
+            "total_h": round(sum(v["cerrados"]), 1)} for k, v in g.items()]
+    return sorted(out, key=lambda r: -(r["total_h"] or 0))
+
+
+def _por_hora(eventos, semilla, desde, hasta, punta):
+    """% de buses operativos al final de cada hora de cada día, y operativos por terminal en hora punta.
+    En cada momento vale el último registro hasta ese momento del reporte más reciente
+    (la misma regla que la descarga 'Estado a una fecha y hora')."""
+    limite = ahora()
+    actual = {i: (date.min, s["operativo"], s["terminal_real"]) for i, s in semilla.items()}
+    evs = sorted(eventos, key=lambda e: (e["ts"], e["fecha"]))
+    pendientes, j, dias, d = [], 0, [], desde
+    while d <= hasta:
+        resto = []
+        for e in pendientes:   # registros de un reporte de fecha futura: valen desde ese día
+            (resto.append(e) if e["fecha"] > d else _aplicar(actual, e))
+        pendientes = resto
+        fila, pt = [], {}
+        for h in range(24):
+            momento = datetime(d.year, d.month, d.day, h, 59, 59, 999999, tzinfo=TZ)
+            if momento - timedelta(minutes=59, seconds=59) > limite:
+                fila.append(None); continue
+            while j < len(evs) and evs[j]["ts"] <= momento:
+                (pendientes.append(evs[j]) if evs[j]["fecha"] > d else _aplicar(actual, evs[j])); j += 1
+            if not actual:   # antes del primer reporte: sin datos
+                fila.append(None); continue
+            op = sum(1 for x in actual.values() if x[1] == "Operativo")
+            fila.append(round(op / len(actual) * 100, 1))
+            if h in punta:
+                por_t = {}
+                for x in actual.values():
+                    if x[1] == "Operativo":
+                        _contar(por_t, x[2])
+                pt[h] = por_t
+        if any(v is not None for v in fila):
+            dias.append({"fecha": d.isoformat(), "h": fila, "punta": pt})
+        d += timedelta(days=1)
+
+    def perfil(filtro):
+        out = []
+        for h in range(24):
+            vs = [x["h"][h] for x in dias if filtro(date.fromisoformat(x["fecha"]).weekday()) and x["h"][h] is not None]
+            out.append(round(sum(vs) / len(vs), 1) if vs else None)
+        return out
+    return dias, {"habil": perfil(lambda w: w < 5), "finde": perfil(lambda w: w >= 5)}
+
+
+def _aplicar(actual, e):
+    previo = actual.get(e["interno"])
+    if previo is None or e["fecha"] >= previo[0]:
+        actual[e["interno"]] = (e["fecha"], e["operativo"], e["terminal_real"])
+
+
+def _semilla(cx, antes_de):
+    return {r["interno"]: r for r in cx.execute(
+        """SELECT DISTINCT ON (c.interno) c.interno, c.operativo, c.motivo, c.terminal_real FROM cambios c
+           JOIN buses b ON b.interno = c.interno AND b.activo
+           WHERE c.fecha < %s ORDER BY c.interno, c.fecha DESC, c.ts DESC, c.id DESC""", (antes_de,)).fetchall()}
+
+
+def _eventos(cx, desde, hasta):
+    return cx.execute(
+        """SELECT c.interno, c.fecha, c.ts, c.tipo, c.usuario, c.nombre, c.operativo, c.motivo, c.terminal_real FROM cambios c
+           JOIN buses b ON b.interno = c.interno AND b.activo
+           WHERE c.fecha BETWEEN %s AND %s ORDER BY c.fecha, c.ts, c.id""", (desde, hasta)).fetchall()
+
+
+def metas_vigentes(cx):
+    return {r["terminal"]: r["requeridos"] for r in cx.execute(
+        "SELECT DISTINCT ON (terminal) terminal, requeridos FROM metas ORDER BY terminal, ts DESC, id DESC").fetchall()}
+
+
+def _calidad(cx, desde, hasta, eventos):
+    """Quién reporta, a qué hora y cuántas correcciones hace (solo administradores)."""
+    reps = cx.execute("SELECT fecha, hora, encargado, registrado_por, creado FROM reportes WHERE fecha BETWEEN %s AND %s ORDER BY fecha",
+                      (desde, hasta)).fetchall()
+    por_u, por_dia = {}, {}
+    for e in eventos:
+        if e["tipo"] != "cambio":
+            continue
+        local = e["ts"].astimezone(TZ)
+        corr = local.date() > e["fecha"]
+        u = por_u.setdefault(e["usuario"], {"usuario": e["usuario"], "nombre": e["nombre"], "cambios": 0, "correcciones": 0,
+                                            "dias": set(), "horas": []})
+        u["cambios"] += 1; u["correcciones"] += corr; u["dias"].add(local.date()); u["horas"].append(local.hour + local.minute / 60)
+        x = por_dia.setdefault(e["fecha"], {"cambios": 0, "correcciones": 0, "usuarios": set()})
+        x["cambios"] += 1; x["correcciones"] += corr; x["usuarios"].add(e["nombre"] or e["usuario"])
+    hhmm = lambda h: f"{int(h):02d}:{int(round(h % 1 * 60)) % 60:02d}" if h is not None else ""
+    usuarios = [{"usuario": u["usuario"], "nombre": u["nombre"], "cambios": u["cambios"], "correcciones": u["correcciones"],
+                 "pct_correcciones": round(u["correcciones"] / u["cambios"] * 100, 1), "dias": len(u["dias"]),
+                 "hora_mediana": hhmm(_mediana(u["horas"]))} for u in sorted(por_u.values(), key=lambda u: -u["cambios"])]
+    dias = []
+    for r in reps:
+        x = por_dia.get(r["fecha"], {"cambios": 0, "correcciones": 0, "usuarios": set()})
+        creado = r["creado"].astimezone(TZ)
+        dias.append({"fecha": r["fecha"].isoformat(), "hora_reporte": r["hora"].strftime("%H:%M"),
+                     "creado": creado.strftime("%d-%m %H:%M"), "tarde": creado.date() > r["fecha"],
+                     "encargado": r["encargado"], "registrado_por": r["registrado_por"], "cambios": x["cambios"],
+                     "correcciones": x["correcciones"], "usuarios": sorted(x["usuarios"])})
+    return {"usuarios": usuarios, "dias": dias}
+
+
+@app.get("/api/tableros")
+@requiere_login
+def api_tableros():
+    a = request.args
+    hoy = ahora().date()
+    hasta = min(parse_fecha(a.get("hasta"), hoy), hoy)
+    desde = parse_fecha(a.get("desde"), hasta - timedelta(days=29))
+    if desde > hasta:
+        desde, hasta = hasta, desde
+    desde = max(desde, hasta - timedelta(days=MAX_DIAS_TABLEROS - 1))
+    grano = a.get("grano") if a.get("grano") in ("dia", "semana", "mes") else "dia"
+    try:
+        umbral = min(max(int(a.get("umbral", 2)), 2), 20)
+    except ValueError:
+        umbral = 2
+    h_desde = max(desde, hasta - timedelta(days=MAX_DIAS_HORAS - 1))
+    previo = desde - timedelta(days=DIAS_PREVIOS)
+    punta = _horas_punta()
+    u = usuario_actual()
+    with conectar() as cx:
+        diario = estado_diario(cx, desde, hasta)
+        eventos = _eventos(cx, previo, hasta)
+        semilla_ep = _semilla(cx, previo)
+        semilla_h = _semilla(cx, h_desde)
+        metas = metas_vigentes(cx)
+        calidad = _calidad(cx, desde, hasta, [e for e in eventos if e["fecha"] >= desde]) if u["rol"] == "admin" else None
+    listado = not es_invitado()
+    fin_def = min(ahora(), datetime(hasta.year, hasta.month, hasta.day, 23, 59, 59, tzinfo=TZ))
+    ini_rango = datetime(desde.year, desde.month, desde.day, tzinfo=TZ)
+
+    # Episodios: los del rango son los que empiezan en él; los abiertos al final sirven para el ranking.
+    todos = [ep for ep in _episodios(eventos, semilla_ep, datetime(previo.year, previo.month, previo.day, tzinfo=TZ))
+             if ep["inicio"] <= fin_def]
+    for ep in todos:
+        if ep["fin"] and ep["fin"] > fin_def:
+            ep["fin"] = None   # para el rango elegido, seguía en mantenimiento al final
+    rango = [ep for ep in todos if ep["inicio"] >= ini_rango]
+    abiertos = sorted((ep for ep in todos if not ep["fin"]), key=lambda ep: ep["inicio"])
+
+    # Reincidencia: vuelve a mantenimiento hasta 7 días después de haber vuelto a operar.
+    ultimo_fin, reincid, en_rango = {}, [], {id(ep) for ep in rango}
+    for ep in sorted(todos, key=lambda ep: ep["inicio"]):
+        prev = ultimo_fin.get(ep["interno"])
+        if id(ep) in en_rango and prev and (ep["inicio"] - prev[0]).total_seconds() <= DIAS_REINCIDENCIA * 86400:
+            reincid.append({"interno": ep["interno"], "reparado": prev[0].strftime("%d-%m %H:%M"),
+                            "volvio": ep["inicio"].strftime("%d-%m %H:%M"), "dias": round((ep["inicio"] - prev[0]).total_seconds() / 86400, 1),
+                            "motivo_antes": prev[1], "motivo": ep["motivo"], "terminal": ep["terminal"]})
+        if ep["fin"]:
+            ultimo_fin[ep["interno"]] = (ep["fin"], ep["motivo"])
+
+    # Reiterativos y Pareto de motivos (por ingresos a mantenimiento en el rango).
+    por_bus, pareto, dias_mt, dias_mt_mot = {}, {}, {}, {}
+    for ep in rango:
+        b = por_bus.setdefault(ep["interno"], {"ingresos": 0, "motivos": {}, "ultimo": ep["inicio"]})
+        b["ingresos"] += 1; _contar(b["motivos"], ep["motivo"]); b["ultimo"] = max(b["ultimo"], ep["inicio"])
+        _contar(pareto, ep["motivo"])
+    for f in diario:
+        if f["operativo"] == "Mantenimiento":
+            _contar(dias_mt, f["interno"]); _contar(dias_mt_mot, f["motivo"] or "Sin motivo")
+    reit = sorted(((i, b) for i, b in por_bus.items() if b["ingresos"] >= umbral),
+                  key=lambda x: (-x[1]["ingresos"], -dias_mt.get(x[0], 0)))
+    distrib = {}
+    for b in por_bus.values():
+        _contar(distrib, b["ingresos"])
+    total_ing, acum, filas_pareto = len(rango), 0, []
+    for k, n in sorted(pareto.items(), key=lambda kv: -kv[1]):
+        acum += n
+        filas_pareto.append({"motivo": k, "ingresos": n, "pct": round(n / total_ing * 100, 1),
+                             "acumulado": round(acum / total_ing * 100, 1), "dias_bus": dias_mt_mot.get(k, 0)})
+
+    # Comparación entre terminales.
+    term = {t: {"terminal": t, "dias_bus": 0, "op": 0} for t in TERMINALES}
+    n_dias = len({f["fecha"] for f in diario}) or 1
+    for f in diario:
+        x = term.setdefault(f["terminal_real"], {"terminal": f["terminal_real"], "dias_bus": 0, "op": 0})
+        x["dias_bus"] += 1; x["op"] += f["operativo"] == "Operativo"
+    tiempos_t = {r["nombre"]: r for r in _resumen_tiempos(rango, "terminal", fin_def)}
+    reinc_t = {}
+    for r in reincid:
+        _contar(reinc_t, r["terminal"])
+    ing_t = {}
+    for ep in rango:
+        _contar(ing_t, ep["terminal"])
+    terminales = [{"terminal": t, "buses_prom": round(x["dias_bus"] / n_dias, 1), "op_prom": round(x["op"] / n_dias, 1),
+                   "disp": round(x["op"] / x["dias_bus"] * 100, 1) if x["dias_bus"] else None, "ingresos": ing_t.get(t, 0),
+                   "mediana_h": tiempos_t.get(t, {}).get("mediana_h"), "reincidencias": reinc_t.get(t, 0), "meta": metas.get(t)}
+                  for t, x in term.items()]
+
+    # Disponibilidad por hora y hora punta frente a la flota requerida.
+    dias_h, perfiles = _por_hora([e for e in eventos if e["fecha"] >= h_desde], semilla_h, h_desde, hasta, punta)
+    cumplimiento = []
+    for t in TERMINALES + [k for k in metas if k not in TERMINALES]:
+        vals = [d["punta"][h].get(t, 0) for d in dias_h for h in d["punta"]]
+        meta = metas.get(t)
+        cumplimiento.append({"terminal": t, "meta": meta, "horas": len(vals),
+                             "prom": round(sum(vals) / len(vals), 1) if vals else None, "minimo": min(vals) if vals else None,
+                             "pct_cumple": round(sum(v >= meta for v in vals) / len(vals) * 100, 1) if vals and meta else None})
+    punta_dias = [{"fecha": d["fecha"], "min": {t: min((d["punta"][h].get(t, 0) for h in d["punta"]), default=None)
+                                                 for t in TERMINALES}} for d in dias_h if d["punta"]]
+
+    ahora_ = ahora()
+    return jsonify(
+        desde=desde.isoformat(), hasta=hasta.isoformat(), grano=grano, umbral=umbral, listado=listado,
+        terminales=TERMINALES, horas_punta=punta, dias_reincidencia=DIAS_REINCIDENCIA,
+        evolucion=_evolucion(diario, grano),
+        tiempos={"motivo": _resumen_tiempos(rango, "motivo", fin_def), "terminal": list(tiempos_t.values()),
+                 "mediana_h": _mediana([_horas(ep, fin_def) for ep in rango if ep["fin"]]), "reparados": sum(1 for ep in rango if ep["fin"])},
+        reiterativos={"ingresos": total_ing, "buses_con_ingreso": len(por_bus), "reiterativos": len(reit),
+                      "ingresos_reiterativos": sum(b["ingresos"] for _, b in reit),
+                      "distribucion": [[k, distrib[k]] for k in sorted(distrib)],
+                      "lista": [{"interno": i, "ingresos": b["ingresos"], "dias_mt": dias_mt.get(i, 0),
+                                 "ultimo": b["ultimo"].strftime("%d-%m-%Y"),
+                                 "motivos": sorted(b["motivos"].items(), key=lambda kv: -kv[1])} for i, b in reit] if listado else []},
+        reincidencia={"total": len(reincid), "tasa": round(len(reincid) / total_ing * 100, 1) if total_ing else None,
+                      "lista": reincid if listado else []},
+        pareto=filas_pareto,
+        detenidos={"total": len(abiertos), "mas_de_7": sum(1 for ep in abiertos if (fin_def - ep["inicio"]).days >= 7),
+                   "lista": [{"interno": ep["interno"], "desde": ep["inicio"].strftime("%d-%m-%Y %H:%M"),
+                              "dias": round((fin_def - ep["inicio"]).total_seconds() / 86400, 1), "desde_antes": ep["desde_antes"],
+                              "motivo": ep["motivo"], "terminal": ep["terminal"]} for ep in abiertos] if listado else [],
+                   "por_motivo": sorted(_resumen_contar(abiertos, "motivo").items(), key=lambda kv: -kv[1])},
+        terminales_cmp=terminales,
+        horas={"desde": h_desde.isoformat(), "dias": [{"fecha": d["fecha"], "h": d["h"]} for d in dias_h], **perfiles},
+        punta={"cumplimiento": cumplimiento, "dias": punta_dias, "metas": metas},
+        calidad=calidad, generado=ahora_.strftime("%d-%m-%Y %H:%M"),
+    )
+
+
+def _resumen_contar(eps, clave):
+    out = {}
+    for ep in eps:
+        _contar(out, ep[clave])
+    return out
+
+
+@app.post("/api/admin/metas")
+@requiere_admin
+def api_admin_metas():
+    """Flota requerida en hora punta por terminal ({terminal, requeridos}). Cada cambio es una fila nueva."""
+    d = request.get_json(silent=True) or {}
+    t = d.get("terminal")
+    if t not in TERMINALES:
+        return jsonify(error="Terminal no válida."), 400
+    try:
+        n = int(d.get("requeridos"))
+        assert 0 <= n <= 1000
+    except (TypeError, ValueError, AssertionError):
+        return jsonify(error="Escribe un número de buses entre 0 y 1000."), 400
+    with conectar() as cx:
+        antes = metas_vigentes(cx).get(t)
+        if antes == n:
+            return jsonify(ok=True)
+        cx.execute("INSERT INTO metas (terminal, requeridos) VALUES (%s,%s)", (t, n))
+        registrar(cx, "Meta de flota en hora punta", "Administración", usuario_actual(), objeto=t,
+                  campo="Buses requeridos", antes="" if antes is None else antes, despues=n)
+    return jsonify(ok=True)
+
+
 def filas_descarga():
     desde = parse_fecha(request.args.get("desde"), date(1900, 1, 1))
     hasta = parse_fecha(request.args.get("hasta"), date(2999, 12, 31))
@@ -1107,7 +1495,9 @@ def api_admin_datos():
                ORDER BY activo DESC, CASE WHEN interno ~ '^[0-9]+$' THEN interno::int END, interno"""
         ).fetchall()
         ms = cx.execute("SELECT id, nombre, activo FROM motivos ORDER BY activo DESC, orden, nombre").fetchall()
-    return jsonify(usuarios=us, buses=bs, motivos=ms, yo=usuario_actual())
+        metas = metas_vigentes(cx)
+    return jsonify(usuarios=us, buses=bs, motivos=ms, yo=usuario_actual(), terminales=TERMINALES, metas=metas,
+                   horas_punta=_horas_punta())
 
 
 @app.post("/api/admin/usuarios")

@@ -1,0 +1,343 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Tableros · Control de Flota</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/base.css">
+<script src="/static/chart.umd.min.js"></script>
+<style>
+/* Serie categórica (orden fijo, validada para daltonismo en claro y oscuro) y rampa secuencial azul */
+:root{--s1:#2a78d6;--s2:#eb6834;--s3:#1baf7a;--s4:#eda100;--s5:#e87ba4;--s6:#008300;--s0:#8a918e;
+  --q1:#cde2fb;--q2:#9ec5f4;--q3:#6da7ec;--q4:#3987e5;--q5:#256abf;--q6:#184f95;--q7:#0d366b}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--s5:#d55181;--s6:#0ca30c;--s0:#7c8682}}
+:root[data-theme="dark"]{--s1:#3987e5;--s2:#d95926;--s3:#199e70;--s4:#c98500;--s5:#d55181;--s6:#0ca30c;--s0:#7c8682}
+h1{font-size:1.45rem;font-weight:800}
+.card h2{font-size:1.05rem;margin:0 0 4px}
+.card .note{margin-bottom:10px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:12px}
+.chart{position:relative;height:280px}
+.chart.alto{height:340px}
+.filtros{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end}
+.seg{display:inline-flex;border:1px solid var(--line);border-radius:8px;overflow:hidden}
+.seg button{border:0;background:var(--surface);color:var(--fg);font:600 .85rem var(--f-display);padding:8px 14px;cursor:pointer}
+.seg button[aria-pressed="true"]{background:var(--accent);color:var(--accent-fg)}
+.heat{border-collapse:separate;border-spacing:2px;width:auto}
+.heat th,.heat td{padding:0;border:0;font:500 .68rem var(--f-mono);text-align:center}
+.heat thead th{position:static;background:none;color:var(--muted);text-transform:none;letter-spacing:0;padding:0 0 2px;min-width:24px}
+.heat th.d{text-align:right;padding-right:6px;color:var(--muted);white-space:nowrap;position:sticky;left:0;background:var(--surface);z-index:1}
+.heat td{width:26px;height:20px;border-radius:3px;color:#0d1a24}
+.heat td.v{background:var(--surface2);color:var(--muted)}
+.heat td.l5,.heat td.l6,.heat td.l7{color:#fff}
+.heat td.l1{background:var(--q1)}.heat td.l2{background:var(--q2)}.heat td.l3{background:var(--q3)}.heat td.l4{background:var(--q4);color:#fff}
+.heat td.l5{background:var(--q5)}.heat td.l6{background:var(--q6)}.heat td.l7{background:var(--q7)}
+.heat td.p{outline:1.5px solid var(--fg);outline-offset:-1.5px}
+.leyenda{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;font-size:.78rem;color:var(--muted);margin-top:8px}
+.leyenda i{display:inline-block;width:18px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:4px}
+tr.p80 td:first-child{box-shadow:inset 3px 0 var(--accent)}
+.bar-in{display:inline-block;height:8px;border-radius:0 4px 4px 0;background:var(--accent);vertical-align:middle;margin-right:6px}
+.tag{display:inline-block;font:600 .72rem var(--f-mono);padding:1px 6px;border-radius:6px;background:var(--surface2);color:var(--muted);margin:1px 2px 1px 0}
+.solo-admin{display:none}
+body.admin .solo-admin{display:block}
+body.invitado .solo-listado{display:none!important}
+.vacio{color:var(--muted);font-size:.9rem}
+td.mono{white-space:nowrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Tableros</h1>
+
+  <section class="card pad filtros" aria-label="Filtros">
+    <label class="f">Desde<input type="date" id="desde"></label>
+    <label class="f">Hasta<input type="date" id="hasta"></label>
+    <div class="f"><span>Agrupar por</span><div class="seg" id="grano" role="group" aria-label="Agrupar por">
+      <button data-g="dia" aria-pressed="true">Día</button><button data-g="semana" aria-pressed="false">Semana</button><button data-g="mes" aria-pressed="false">Mes</button></div></div>
+    <label class="f">Reiterativo desde<select id="umbral"><option value="2">2 ingresos</option><option value="3" selected>3 ingresos</option><option value="4">4 ingresos</option><option value="5">5 ingresos</option></select></label>
+    <button class="btn" id="aplicar">Actualizar</button>
+    <p class="note" id="gen" style="flex-basis:100%"></p>
+  </section>
+
+  <div id="err" class="msg err" hidden></div>
+  <div class="kpis" id="kpis"></div>
+
+  <!-- 1 · Evolución por estatus -->
+  <section class="card pad">
+    <h2>Evolución por estatus</h2>
+    <p class="note" id="n-evo">Buses operativos y en mantenimiento al cierre de cada día. En semana y mes es el promedio diario del período.</p>
+    <div class="grid2">
+      <div class="chart"><canvas id="c-evo"></canvas></div>
+      <div class="chart"><canvas id="c-disp"></canvas></div>
+    </div>
+  </section>
+
+  <section class="card pad">
+    <h2>Buses en mantenimiento por motivo</h2>
+    <p class="note">Promedio diario de buses detenidos por cada motivo. Los motivos menos frecuentes se agrupan en «Otros motivos».</p>
+    <div class="chart alto"><canvas id="c-mot"></canvas></div>
+  </section>
+
+  <!-- 2 · Disponibilidad por hora -->
+  <section class="card pad">
+    <h2>Disponibilidad por hora</h2>
+    <p class="note" id="n-hora">Porcentaje de la flota operativa al final de cada hora, según el historial de cambios.</p>
+    <div class="chart"><canvas id="c-hora"></canvas></div>
+    <h3 style="font-size:.9rem;margin:14px 0 6px">Mapa de calor: día por hora</h3>
+    <div class="scroll" style="max-height:520px" id="heat"></div>
+    <div class="leyenda" id="heat-ley"></div>
+  </section>
+
+  <!-- 3 · Hora punta frente a flota requerida -->
+  <section class="card pad">
+    <h2>Hora punta frente a la flota requerida</h2>
+    <p class="note" id="n-punta"></p>
+    <div class="grid2">
+      <div class="scroll" id="t-punta"></div>
+      <div class="chart"><canvas id="c-punta"></canvas></div>
+    </div>
+  </section>
+
+  <!-- 4 · Tiempo fuera de servicio y Pareto -->
+  <div class="grid2">
+    <section class="card pad">
+      <h2>Tiempo fuera de servicio por motivo</h2>
+      <p class="note">Desde que el bus pasa a Mantenimiento hasta que vuelve a Operativo. Mediana en días de los episodios terminados que empezaron en el rango.</p>
+      <div class="scroll" id="t-tiempo"></div>
+    </section>
+    <section class="card pad">
+      <h2>Pareto de motivos</h2>
+      <p class="note">Ingresos a mantenimiento por motivo, de mayor a menor. La marca azul indica los motivos que juntos explican el 80% de los ingresos.</p>
+      <div class="scroll" id="t-pareto"></div>
+    </section>
+  </div>
+
+  <!-- 5 · Buses reiterativos, reincidencia y detenidos -->
+  <section class="card pad">
+    <h2>Buses reiterativos</h2>
+    <p class="note" id="n-reit"></p>
+    <div class="grid2">
+      <div class="chart"><canvas id="c-reit"></canvas></div>
+      <div class="scroll solo-listado" style="max-height:340px" id="t-reit"></div>
+    </div>
+  </section>
+
+  <div class="grid2">
+    <section class="card pad">
+      <h2>Reincidencia después de la reparación</h2>
+      <p class="note" id="n-reinc"></p>
+      <div class="scroll solo-listado" style="max-height:380px" id="t-reinc"></div>
+    </section>
+    <section class="card pad">
+      <h2>Buses detenidos hace más tiempo</h2>
+      <p class="note" id="n-det"></p>
+      <div class="scroll" style="max-height:380px" id="t-det"></div>
+    </section>
+  </div>
+
+  <!-- 6 · Comparación entre terminales -->
+  <section class="card pad">
+    <h2>Comparación entre terminales</h2>
+    <p class="note">Terminal Real de cada bus al cierre del día. Los ingresos, el tiempo de reparación y la reincidencia se asignan a la terminal donde estaba el bus al entrar a mantenimiento.</p>
+    <div class="scroll" id="t-term"></div>
+  </section>
+
+  <!-- 7 · Calidad del reporte (solo administradores) -->
+  <section class="card pad solo-admin">
+    <h2>Calidad del reporte</h2>
+    <p class="note">Solo administradores. Una corrección es un cambio hecho otro día sobre un reporte anterior. «Tarde» marca reportes creados después del día que informan.</p>
+    <div class="grid2">
+      <div class="scroll" id="t-cal-u"></div>
+      <div class="scroll" style="max-height:420px" id="t-cal-d"></div>
+    </div>
+  </section>
+</div>
+<script src="/static/comun.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const SERIES = ["--s1", "--s2", "--s3", "--s4", "--s5", "--s6"];
+let T, grano = "dia", graficos = {}, yo;
+const hoyISO = () => new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+const num = (v, d = 1) => v === null || v === undefined ? "–" : Number(v).toLocaleString("es-CL", {maximumFractionDigits: d});
+const dias = h => h === null || h === undefined ? "–" : num(h / 24) + " d";
+const kpi = (t, v, s = "") => `<div class="kpi"><span>${t}</span><b>${v}</b>${s ? `<small>${s}</small>` : ""}</div>`;
+const tabla = (cab, filas, vacio = "Sin datos en el rango.") => filas.length
+  ? `<table><thead><tr>${cab.map(c => `<th>${c}</th>`).join("")}</tr></thead><tbody>${filas.join("")}</tbody></table>`
+  : `<p class="vacio">${vacio}</p>`;
+const tags = ms => ms.map(([k, n]) => `<span class="tag">${esc(k)} ×${n}</span>`).join("");
+
+function grafico(id, cfg) {
+  graficos[id]?.destroy();
+  Chart.defaults.font.family = css("--f-display"); Chart.defaults.color = css("--muted"); Chart.defaults.borderColor = css("--line");
+  cfg.options = Object.assign({maintainAspectRatio: false, interaction: {mode: "index", intersect: false}}, cfg.options);
+  cfg.options.plugins = Object.assign({legend: {position: "bottom", labels: {boxWidth: 12, boxHeight: 12}}}, cfg.options.plugins);
+  graficos[id] = new Chart($(id), cfg);
+}
+const barra_ = (label, data, color, extra = {}) => Object.assign({label, data, backgroundColor: color, borderColor: css("--surface"), borderWidth: {top: 2}, borderRadius: 4, borderSkipped: "start", maxBarThickness: 40}, extra);
+const linea = (label, data, color, extra = {}) => Object.assign({label, data, borderColor: color, backgroundColor: color, borderWidth: 2, pointRadius: data.length > 40 ? 0 : 3, pointHoverRadius: 5, tension: .25, spanGaps: true}, extra);
+
+async function cargar() {
+  $("err").hidden = true;
+  const q = `?desde=${$("desde").value}&hasta=${$("hasta").value}&grano=${grano}&umbral=${$("umbral").value}`;
+  try { T = await api("/api/tableros" + q); } catch (x) { $("err").hidden = false; $("err").textContent = x.message; return; }
+  $("gen").textContent = `Del ${fmtFecha(T.desde)} al ${fmtFecha(T.hasta)} · calculado desde el historial de cambios el ${T.generado}.`;
+  pintar();
+}
+
+function pintar() {
+  const E = T.evolucion;
+  const op = E.reduce((a, p) => a + p.op * p.dias, 0), tot = E.reduce((a, p) => a + (p.op + p.mt) * p.dias, 0);
+  $("kpis").innerHTML = kpi("Disponibilidad promedio", tot ? num(op / tot * 100) + "%" : "–", `${E.reduce((a, p) => a + p.dias, 0)} días con reporte`) +
+    kpi("Ingresos a mantenimiento", T.reiterativos.ingresos, `${T.reiterativos.buses_con_ingreso} buses distintos`) +
+    kpi("Tiempo fuera de servicio", dias(T.tiempos.mediana_h), `mediana de ${T.tiempos.reparados} reparaciones`) +
+    kpi(`Reincidencia ≤ ${T.dias_reincidencia} días`, T.reincidencia.tasa === null ? "–" : num(T.reincidencia.tasa) + "%", `${T.reincidencia.total} de ${T.reiterativos.ingresos} ingresos`) +
+    kpi("Detenidos ahora", T.detenidos.total, `${T.detenidos.mas_de_7} hace 7 días o más`);
+  evolucion(); porHora(); punta(); tiempos(); pareto(); reiterativos(); reincidencia(); detenidos(); terminales(); calidad();
+}
+
+function evolucion() {
+  const E = T.evolucion, L = E.map(p => p.etiqueta), unidad = grano === "dia" ? "Buses" : "Buses (promedio diario)";
+  $("n-evo").textContent = grano === "dia" ? "Buses operativos y en mantenimiento al cierre de cada día." : `Promedio diario de buses por ${grano}. Pasa el cursor para ver cuántos días con reporte tiene cada período.`;
+  const tip = {callbacks: {footer: it => { const p = E[it[0].dataIndex]; return grano === "dia" ? "" : `${p.dias} días con reporte (${fmtFecha(p.desde)} a ${fmtFecha(p.hasta)})`; }}};
+  grafico("c-evo", {type: "bar", data: {labels: L, datasets: [barra_("Operativo", E.map(p => p.op), css("--ok")), barra_("Mantenimiento", E.map(p => p.mt), css("--mt"))]},
+    options: {scales: {x: {stacked: true, grid: {display: false}}, y: {stacked: true, beginAtZero: true, title: {display: true, text: unidad}}}, plugins: {tooltip: tip, title: {display: true, text: "Buses por estatus", align: "start"}}}});
+  grafico("c-disp", {type: "line", data: {labels: L, datasets: [linea("Disponibilidad", E.map(p => p.disp), css("--accent"), {fill: false})]},
+    options: {scales: {x: {grid: {display: false}}, y: {suggestedMin: piso(E.map(p => p.disp)), max: 100, ticks: {callback: v => v + "%"}}}, plugins: {legend: {display: false}, tooltip: {callbacks: {label: c => ` Disponibilidad ${num(c.raw)}%`}}, title: {display: true, text: "% de la flota operativa", align: "start"}}}});
+  // Motivos: los 6 más frecuentes del rango con su color fijo; el resto en «Otros motivos».
+  const tot = {}; E.forEach(p => Object.entries(p.motivos).forEach(([k, v]) => tot[k] = (tot[k] || 0) + v * p.dias));
+  const orden = Object.keys(tot).sort((a, b) => tot[b] - tot[a]), top = orden.slice(0, 6), resto = orden.slice(6);
+  const ds = top.map((m, i) => barra_(m, E.map(p => p.motivos[m] || 0), css(SERIES[i])));
+  if (resto.length) ds.push(barra_("Otros motivos", E.map(p => Math.round(resto.reduce((a, m) => a + (p.motivos[m] || 0), 0) * 10) / 10), css("--s0")));
+  grafico("c-mot", {type: "bar", data: {labels: L, datasets: ds},
+    options: {scales: {x: {stacked: true, grid: {display: false}}, y: {stacked: true, beginAtZero: true, title: {display: true, text: unidad}}}}});
+}
+
+// Eje de % que no exagera diferencias pequeñas: parte al menos 10 puntos bajo el mínimo.
+const piso = vs => { const m = Math.min(...vs.filter(v => v !== null)); return isFinite(m) ? Math.max(0, Math.floor((m - 10) / 10) * 10) : 0; };
+const nivel = v => v === null ? "v" : "l" + (v >= 97 ? 7 : v >= 93 ? 6 : v >= 89 ? 5 : v >= 85 ? 4 : v >= 80 ? 3 : v >= 70 ? 2 : 1);
+function porHora() {
+  const H = T.horas, L = [...Array(24).keys()].map(h => String(h).padStart(2, "0") + ":00");
+  $("n-hora").textContent = `Porcentaje de la flota operativa al final de cada hora, del ${fmtFecha(H.desde)} al ${fmtFecha(T.hasta)}` +
+    (H.desde > T.desde ? " (se usan como máximo los últimos 120 días del rango)." : ".") + " Las horas punta van marcadas con borde en el mapa.";
+  grafico("c-hora", {type: "line", data: {labels: L, datasets: [linea("Lunes a viernes", H.habil, css("--s1")), linea("Sábado y domingo", H.finde, css("--s2"), {borderDash: [6, 4]})]},
+    options: {scales: {x: {grid: {display: false}}, y: {suggestedMin: piso([...H.habil, ...H.finde]), max: 100, ticks: {callback: v => v + "%"}}}, plugins: {tooltip: {callbacks: {label: c => ` ${c.dataset.label}: ${num(c.raw)}%`}}}}});
+  const P = new Set(T.horas_punta);
+  $("heat").innerHTML = H.dias.length ? `<table class="heat"><thead><tr><th class="d"></th>${L.map((l, h) => `<th>${String(h).padStart(2, "0")}</th>`).join("")}</tr></thead><tbody>` +
+    H.dias.slice().reverse().map(d => `<tr><th class="d">${diaSemana(d.fecha).slice(0, 3)} ${fmtFecha(d.fecha).slice(0, 5)}</th>` +
+      d.h.map((v, h) => `<td class="${nivel(v)}${P.has(h) ? " p" : ""}" title="${fmtFecha(d.fecha)} ${L[h]}: ${v === null ? "sin dato" : num(v) + "% operativa"}">${v === null ? "" : Math.round(v)}</td>`).join("") + "</tr>").join("") + "</tbody></table>"
+    : '<p class="vacio">Sin datos en el rango.</p>';
+  $("heat-ley").innerHTML = "Operativa:" + [["l1", "< 70%"], ["l2", "70–79"], ["l3", "80–84"], ["l4", "85–88"], ["l5", "89–92"], ["l6", "93–96"], ["l7", "≥ 97%"]]
+    .map(([c, t]) => `<span><i style="background:var(--q${c[1]})"></i>${t}</span>`).join("") + '<span><i style="outline:1.5px solid var(--fg);outline-offset:-1.5px;background:var(--surface2)"></i>hora punta</span>';
+}
+
+function punta() {
+  const P = T.punta, hs = T.horas_punta.map(h => String(h).padStart(2, "0")).join(", ");
+  const conMeta = Object.keys(P.metas).length;
+  $("n-punta").textContent = `Horas punta: ${hs} h (variable HORAS_PUNTA en Render). Buses operativos por terminal en esas horas, frente a la flota requerida que carga un administrador en «Usuarios, motivos y buses».` +
+    (conMeta ? "" : " Aún no hay metas cargadas.");
+  const filas = P.cumplimiento.filter(c => c.meta !== null || c.prom);
+  $("t-punta").innerHTML = tabla(["Terminal", "Requeridos", "Operativos (prom.)", "Mínimo", "Brecha", "Horas punta que cumplen"], filas.map(c => {
+    const br = c.meta === null || c.prom === null ? null : c.prom - c.meta;
+    return `<tr><td><b>${esc(c.terminal)}</b></td><td class="mono">${c.meta ?? "sin meta"}</td><td class="mono">${num(c.prom)}</td><td class="mono">${c.minimo ?? "–"}</td>
+      <td class="mono">${br === null ? "–" : `<span class="pill ${br >= 0 ? "p-ok" : "p-mt"}">${br > 0 ? "+" : ""}${num(br)}</span>`}</td>
+      <td class="mono">${c.pct_cumple === null ? "–" : `<span class="pill ${c.pct_cumple >= 95 ? "p-ok" : "p-mt"}">${num(c.pct_cumple)}%</span>`}</td></tr>`; }));
+  const ts = T.terminales.filter(t => P.dias.some(d => d.min[t]) || P.metas[t] !== undefined), L = P.dias.map(d => fmtFecha(d.fecha).slice(0, 5));
+  const ds = [];
+  ts.forEach((t, i) => {
+    ds.push(linea(t, P.dias.map(d => d.min[t]), css(SERIES[i])));
+    if (P.metas[t] !== undefined) ds.push(linea(`Requeridos ${t}`, P.dias.map(() => P.metas[t]), css(SERIES[i]), {borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5}));
+  });
+  grafico("c-punta", {type: "line", data: {labels: L, datasets: ds},
+    options: {scales: {x: {grid: {display: false}}, y: {beginAtZero: true, title: {display: true, text: "Buses operativos (mínimo en punta)"}}},
+      plugins: {title: {display: true, text: "Mínimo diario en hora punta (línea punteada: requeridos)", align: "start"}}}});
+}
+
+function tiempos() {
+  const M = T.tiempos.motivo.filter(r => r.reparados || r.abiertos), max = Math.max(1, ...M.map(r => r.mediana_h || 0));
+  $("t-tiempo").innerHTML = tabla(["Motivo", "Mediana", "Promedio", "Reparados", "Siguen detenidos"], M.sort((a, b) => (b.mediana_h || 0) - (a.mediana_h || 0)).map(r =>
+    `<tr><td><b>${esc(r.nombre)}</b></td><td class="mono"><span class="bar-in" style="width:${Math.round((r.mediana_h || 0) / max * 80)}px"></span>${dias(r.mediana_h)}</td>
+     <td class="mono">${dias(r.promedio_h)}</td><td class="mono">${r.reparados}</td><td class="mono">${r.abiertos}</td></tr>`), "Ningún ingreso a mantenimiento en el rango.");
+}
+
+function pareto() {
+  const P = T.pareto, max = Math.max(1, ...P.map(r => r.ingresos));
+  let previo = 0;
+  $("t-pareto").innerHTML = tabla(["Motivo", "Ingresos", "%", "Acumulado", "Días-bus detenidos"], P.map(r => {
+    const vital = previo < 80; previo = r.acumulado;
+    return `<tr class="${vital ? "p80" : ""}"><td><b>${esc(r.motivo)}</b></td><td class="mono"><span class="bar-in" style="width:${Math.round(r.ingresos / max * 80)}px"></span>${r.ingresos}</td>
+      <td class="mono">${num(r.pct)}%</td><td class="mono">${num(r.acumulado)}%</td><td class="mono">${r.dias_bus}</td></tr>`; }), "Ningún ingreso a mantenimiento en el rango.");
+}
+
+function reiterativos() {
+  const R = T.reiterativos;
+  $("n-reit").textContent = `${R.reiterativos} buses entraron a mantenimiento ${T.umbral} veces o más en el rango y suman ${R.ingresos_reiterativos} de ${R.ingresos} ingresos` +
+    (R.ingresos ? ` (${num(R.ingresos_reiterativos / R.ingresos * 100)}%).` : ".") + (T.listado ? "" : " El perfil invitado ve solo la distribución.");
+  grafico("c-reit", {type: "bar", data: {labels: R.distribucion.map(([k]) => k + (k === 1 ? " ingreso" : " ingresos")),
+      datasets: [barra_("Buses", R.distribucion.map(([, n]) => n), R.distribucion.map(([k]) => k >= T.umbral ? css("--mt") : css("--s0")))]},
+    options: {scales: {x: {grid: {display: false}}, y: {beginAtZero: true, ticks: {precision: 0}, title: {display: true, text: "Buses"}}},
+      plugins: {legend: {display: false}, title: {display: true, text: "Buses según cuántas veces entraron a mantenimiento (rojo: reiterativos)", align: "start"}}}});
+  $("t-reit").innerHTML = tabla(["Interno", "Ingresos", "Días en mant.", "Motivos", "Último ingreso"], R.lista.map(b =>
+    `<tr><td class="mono"><b>${esc(b.interno)}</b></td><td class="mono">${b.ingresos}</td><td class="mono">${b.dias_mt}</td><td>${tags(b.motivos)}</td><td class="mono">${esc(b.ultimo)}</td></tr>`),
+    "Ningún bus reiterativo en el rango.");
+}
+
+function reincidencia() {
+  const R = T.reincidencia;
+  $("n-reinc").textContent = `Buses que vuelven a mantenimiento hasta ${T.dias_reincidencia} días después de haber vuelto a operar: ${R.total} casos` +
+    (R.tasa === null ? "." : `, ${num(R.tasa)}% de los ingresos. Una tasa alta apunta a reparaciones incompletas.`);
+  $("t-reinc").innerHTML = tabla(["Interno", "Volvió a operar", "Volvió a fallar", "Días", "Motivo anterior", "Motivo nuevo"], R.lista.slice().reverse().map(r =>
+    `<tr><td class="mono"><b>${esc(r.interno)}</b></td><td class="mono">${esc(r.reparado)}</td><td class="mono">${esc(r.volvio)}</td><td class="mono">${num(r.dias)}</td>
+     <td>${esc(r.motivo_antes)}</td><td>${r.motivo === r.motivo_antes ? "<b>" + esc(r.motivo) + "</b>" : esc(r.motivo)}</td></tr>`), "Sin reincidencias en el rango.");
+}
+
+function detenidos() {
+  const D = T.detenidos;
+  $("n-det").textContent = `${D.total} buses seguían en mantenimiento al ${fmtFecha(T.hasta)}, ordenados por tiempo detenido. ${D.mas_de_7} llevan 7 días o más.`;
+  $("t-det").innerHTML = T.listado
+    ? tabla(["Interno", "Días detenido", "Desde", "Motivo", "Terminal"], D.lista.map(r =>
+        `<tr><td class="mono"><b>${esc(r.interno)}</b></td><td class="mono"><span class="pill ${r.dias >= 7 ? "p-mt" : ""}">${num(r.dias)}${r.desde_antes ? "+" : ""}</span></td>
+         <td class="mono">${esc(r.desde)}</td><td>${esc(r.motivo)}</td><td>${esc(r.terminal)}</td></tr>`), "Ningún bus detenido.")
+    : tabla(["Motivo", "Buses detenidos"], D.por_motivo.map(([k, n]) => `<tr><td>${esc(k)}</td><td class="mono">${n}</td></tr>`), "Ningún bus detenido.");
+}
+
+function terminales() {
+  $("t-term").innerHTML = tabla(["Terminal", "Buses (prom.)", "Operativos (prom.)", "Disponibilidad", "Ingresos a mant.", "Tiempo de reparación (mediana)", "Reincidencias", "Requeridos en punta"],
+    T.terminales_cmp.filter(t => t.buses_prom || t.ingresos || t.meta !== null).map(t =>
+      `<tr><td><b>${esc(t.terminal)}</b></td><td class="mono">${num(t.buses_prom)}</td><td class="mono">${num(t.op_prom)}</td>
+       <td class="mono">${t.disp === null ? "–" : num(t.disp) + "%"}</td><td class="mono">${t.ingresos}</td><td class="mono">${dias(t.mediana_h)}</td>
+       <td class="mono">${t.reincidencias}</td><td class="mono">${t.meta ?? "–"}</td></tr>`));
+}
+
+function calidad() {
+  const C = T.calidad; if (!C) return;
+  $("t-cal-u").innerHTML = tabla(["Usuario", "Nombre", "Cambios", "Correcciones", "% corr.", "Días activos", "Hora típica"], C.usuarios.map(u =>
+    `<tr><td class="mono">${esc(u.usuario)}</td><td>${esc(u.nombre)}</td><td class="mono">${u.cambios}</td><td class="mono">${u.correcciones}</td>
+     <td class="mono">${num(u.pct_correcciones)}%</td><td class="mono">${u.dias}</td><td class="mono">${esc(u.hora_mediana)}</td></tr>`), "Sin cambios en el rango.");
+  $("t-cal-d").innerHTML = tabla(["Día", "Hora", "Creado", "Creado por", "Cambios", "Correcciones", "Quiénes"], C.dias.slice().reverse().map(d =>
+    `<tr><td class="mono">${fmtFecha(d.fecha)}</td><td class="mono">${esc(d.hora_reporte)}</td><td class="mono">${esc(d.creado)}${d.tarde ? ' <span class="pill p-mt">tarde</span>' : ""}</td>
+     <td>${esc(d.registrado_por)}</td><td class="mono">${d.cambios}</td><td class="mono">${d.correcciones}</td><td class="note">${d.usuarios.map(esc).join(", ")}</td></tr>`));
+}
+
+$("grano").addEventListener("click", e => {
+  const b = e.target.closest("button"); if (!b) return;
+  grano = b.dataset.g; $("grano").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x === b));
+  guardarPref("tab-grano", grano); cargar();
+});
+$("aplicar").onclick = cargar;
+$("umbral").onchange = cargar;
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => T && pintar());
+
+(async () => {
+  yo = await barra("/tableros");
+  document.body.classList.add(yo.rol);
+  grano = leerPref("tab-grano", "dia");
+  $("grano").querySelectorAll("button").forEach(x => x.setAttribute("aria-pressed", x.dataset.g === grano));
+  const h = hoyISO(), d = new Date(h + "T12:00:00"); d.setDate(d.getDate() - 29);
+  $("hasta").value = h; $("hasta").max = h; $("desde").value = d.toISOString().slice(0, 10);
+  await cargar();
+})().catch(x => { $("err").hidden = false; $("err").textContent = x.message; });
+</script>
+</body>
+</html>
