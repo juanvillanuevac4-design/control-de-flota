@@ -10,6 +10,7 @@ import re
 import secrets
 import threading
 import time
+import unicodedata
 from datetime import date, datetime, timedelta
 from functools import wraps
 from pathlib import Path
@@ -345,6 +346,8 @@ def _iniciar_bd():
             if filas:
                 registrar_varias(cx, filas, ts=m["fecha"])
             app.logger.info("Bitácora: %s correcciones anteriores registradas", len(corregidas))
+        if cx.execute("INSERT INTO migraciones (nombre) VALUES ('carga_excel_14_11') ON CONFLICT DO NOTHING RETURNING 1").fetchone():
+            _carga_excel_14_11(cx)
         cx.execute(SCHEMA_PROTEGER_CAMBIOS)
         hay_admin = cx.execute("SELECT 1 FROM usuarios WHERE rol='admin' AND activo").fetchone()
         if not hay_admin and ADMIN_CLAVE:
@@ -358,6 +361,90 @@ def _iniciar_bd():
         if cx.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (ROL_APP,)).fetchone():
             cx.execute(PERMISOS_APP)
             app.logger.info("Permisos del rol %s actualizados", ROL_APP)
+
+
+def _normalizar(t):
+    return "".join(c for c in unicodedata.normalize("NFD", t.strip().lower()) if unicodedata.category(c) != "Mn")
+
+
+def _carga_excel_14_11(cx):
+    """Una sola vez (pedido de Juan Patricio, 18-11-2026): buses en mantenimiento del Excel del 14-11 con su motivo.
+    1) Agrega a la lista los motivos que faltan (si ya existe uno igual salvo tildes o mayúsculas, se usa ese).
+    2) Reporte del 14-11: cada bus del Excel queda en Mantenimiento con su motivo (si no hay reporte, se crea).
+    3) Reportes posteriores: se arrastra el mismo estado, salvo en buses que alguien ya cambió a mano después
+       del 14-11 (su dato es más nuevo y no se pisa). Todo se agrega como cambio nuevo en `cambios` y en la bitácora."""
+    from carga_excel_14_11 import ARCHIVO, BUSES as CARGA, FECHA, MOTIVOS
+    n = ahora()
+    fecha = date.fromisoformat(FECHA)
+    u = {"usuario": "sistema", "nombre": "Carga Excel 14-11 (Juan Patricio)", "rol": "sistema"}
+    origen, detalle = "Carga desde Excel", f"Archivo {ARCHIVO}, pedido por Juan Patricio el 18-11-2026"
+    # 1) Motivos
+    existentes = {_normalizar(m["nombre"]): m for m in cx.execute("SELECT * FROM motivos").fetchall()}
+    orden = (cx.execute("SELECT coalesce(max(orden), 0) AS o FROM motivos WHERE orden < 100").fetchone()["o"] or 0) + 1
+    nombre_final = {}
+    for m in MOTIVOS:
+        e = existentes.get(_normalizar(m))
+        if e:
+            nombre_final[m] = e["nombre"]
+            if not e["activo"]:
+                cx.execute("UPDATE motivos SET activo=TRUE WHERE id=%s", (e["id"],))
+                registrar(cx, "Motivo activado", origen, u, n, objeto=e["nombre"], campo="Estado",
+                          antes="Inactivo", despues="Activo", detalle=detalle)
+        else:
+            cx.execute("INSERT INTO motivos (nombre, orden) VALUES (%s,%s)", (m, orden))
+            orden += 1
+            nombre_final[m] = m
+            registrar(cx, "Motivo agregado", origen, u, n, objeto=m, detalle=detalle)
+    carga = {i: nombre_final[m] for i, _, m in CARGA}
+    # 2) Reporte del 14-11 (se crea si no existe, igual que el primer guardado del día)
+    rep = cx.execute("SELECT * FROM reportes WHERE fecha=%s", (fecha,)).fetchone()
+    if not rep:
+        hora = n.time().replace(second=0, microsecond=0)
+        rid = cx.execute("INSERT INTO reportes (fecha, hora, encargado, registrado_por) VALUES (%s,%s,%s,%s) RETURNING id",
+                         (fecha, hora, u["nombre"], u["usuario"])).fetchone()["id"]
+        _, filas = prellenado(cx, fecha)
+        cx.cursor().executemany(
+            """INSERT INTO base (reporte_id, fecha, hora, encargado, placa, interno, tipo_bus, tipo_flota,
+                                 marca_chasis, terminal_op, terminal_real, operativo, motivo, observacion)
+               VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+            [(rid, fecha, hora, u["nombre"], f["placa"], f["interno"], f["tipo_bus"], f["tipo_flota"], f["marca_chasis"],
+              f["terminal_op"], f["terminal_real"], f["operativo"], f["motivo"], f["observacion"]) for f in filas])
+        cx.cursor().executemany(
+            """INSERT INTO cambios (ts, fecha, tipo, usuario, nombre, interno, terminal_real, operativo, motivo, observacion)
+               VALUES (%s,%s,'inicial',%s,%s,%s,%s,%s,%s,%s)""",
+            [(n, fecha, u["usuario"], u["nombre"], f["interno"], f["terminal_real"], f["operativo"], f["motivo"],
+              f["observacion"]) for f in filas])
+        registrar(cx, "Reporte del día creado", origen, u, n, fecha_reporte=fecha,
+                  detalle=f"{len(filas)} buses, para cargar el Excel del 14-11. {detalle}")
+    # 3) Del 14-11 en adelante
+    resumen, respetados = [], {}
+    for r in cx.execute("SELECT id, fecha FROM reportes WHERE fecha >= %s ORDER BY fecha", (fecha,)).fetchall():
+        tocados = set() if r["fecha"] == fecha else {x["interno"] for x in cx.execute(
+            """SELECT DISTINCT interno FROM cambios WHERE tipo='cambio' AND usuario <> 'sistema'
+               AND fecha > %s AND fecha <= %s""", (fecha, r["fecha"])).fetchall()}
+        actuales = {f["interno"]: f for f in cx.execute("SELECT * FROM base WHERE reporte_id=%s", (r["id"],)).fetchall()}
+        aplicados = 0
+        for i, motivo in carga.items():
+            a = actuales.get(i)
+            if not a or (a["operativo"] == "Mantenimiento" and a["motivo"] == motivo):
+                continue
+            if i in tocados:
+                respetados.setdefault(r["fecha"].isoformat(), []).append(i)
+                continue
+            registrar_varias(cx, [dict(accion="Cambio de bus", origen=origen, fecha_reporte=r["fecha"], interno=i,
+                                       campo=NOMBRE_CAMPO[c], antes=a[c] or "", despues=v, detalle=detalle)
+                                  for c, v in (("operativo", "Mantenimiento"), ("motivo", motivo)) if (a[c] or "") != v], u, n)
+            cx.execute("""UPDATE base SET operativo='Mantenimiento', motivo=%s, cambio_ts=%s, cambio_por=%s
+                          WHERE reporte_id=%s AND interno=%s""", (motivo, n, u["nombre"], r["id"], i))
+            cx.execute("""INSERT INTO cambios (ts, fecha, tipo, usuario, nombre, interno, terminal_real, operativo, motivo, observacion)
+                          VALUES (%s,%s,'cambio',%s,%s,%s,%s,'Mantenimiento',%s,%s)""",
+                       (n, r["fecha"], u["usuario"], u["nombre"], i, a["terminal_real"], motivo, a["observacion"]))
+            aplicados += 1
+        if aplicados:
+            cx.execute("UPDATE reportes SET modificado_por=%s, modificado=now() WHERE id=%s", (u["usuario"], r["id"]))
+        resumen.append(f"{r['fecha']:%d-%m}: {aplicados}")
+    app.logger.info("Carga Excel 14-11: buses actualizados por reporte: %s. No se pisaron (cambiados a mano después "
+                    "del 14-11): %s", ", ".join(resumen), json.dumps(respetados) if respetados else "ninguno")
 
 
 def parse_fecha(s, defecto=None):
