@@ -55,7 +55,6 @@ td.mono{white-space:nowrap}
     <label class="f">Hasta<input type="date" id="hasta"></label>
     <div class="f"><span>Agrupar por</span><div class="seg" id="grano" role="group" aria-label="Agrupar por">
       <button data-g="dia" aria-pressed="true">Día</button><button data-g="semana" aria-pressed="false">Semana</button><button data-g="mes" aria-pressed="false">Mes</button></div></div>
-    <label class="f">Reiterativo desde<select id="umbral"><option value="2">2 ingresos</option><option value="3" selected>3 ingresos</option><option value="4">4 ingresos</option><option value="5">5 ingresos</option></select></label>
     <button class="btn" id="aplicar">Actualizar</button>
     <p class="note" id="gen" style="flex-basis:100%"></p>
   </section>
@@ -113,16 +112,7 @@ td.mono{white-space:nowrap}
     </section>
   </div>
 
-  <!-- 5 · Buses reiterativos, reincidencia y detenidos -->
-  <section class="card pad">
-    <h2>Buses reiterativos</h2>
-    <p class="note" id="n-reit"></p>
-    <div class="grid2">
-      <div class="chart"><canvas id="c-reit"></canvas></div>
-      <div class="scroll solo-listado" style="max-height:340px" id="t-reit"></div>
-    </div>
-  </section>
-
+  <!-- 5 · Reincidencia y detenidos (los reiterativos tienen su propia pantalla: /reiterativos) -->
   <div class="grid2">
     <section class="card pad">
       <h2>Reincidencia después de la reparación</h2>
@@ -180,7 +170,7 @@ const linea = (label, data, color, extra = {}) => Object.assign({label, data, bo
 
 async function cargar() {
   $("err").hidden = true;
-  const q = `?desde=${$("desde").value}&hasta=${$("hasta").value}&grano=${grano}&umbral=${$("umbral").value}`;
+  const q = `?desde=${$("desde").value}&hasta=${$("hasta").value}&grano=${grano}`;
   try { T = await api("/api/tableros" + q); } catch (x) { $("err").hidden = false; $("err").textContent = x.message; return; }
   $("gen").textContent = `Del ${fmtFecha(T.desde)} al ${fmtFecha(T.hasta)} · calculado desde el historial de cambios el ${T.generado}.`;
   pintar();
@@ -194,7 +184,7 @@ function pintar() {
     kpi("Tiempo fuera de servicio", dias(T.tiempos.mediana_h), `mediana de ${T.tiempos.reparados} reparaciones`) +
     kpi(`Reincidencia ≤ ${T.dias_reincidencia} días`, T.reincidencia.tasa === null ? "–" : num(T.reincidencia.tasa) + "%", `${T.reincidencia.total} de ${T.reiterativos.ingresos} ingresos`) +
     kpi("Detenidos ahora", T.detenidos.total, `${T.detenidos.mas_de_7} hace 7 días o más`);
-  evolucion(); porHora(); punta(); tiempos(); pareto(); reiterativos(); reincidencia(); detenidos(); terminales(); calidad();
+  evolucion(); porHora(); punta(); tiempos(); pareto(); reincidencia(); detenidos(); terminales(); calidad();
 }
 
 function evolucion() {
@@ -270,19 +260,6 @@ function pareto() {
       <td class="mono">${num(r.pct)}%</td><td class="mono">${num(r.acumulado)}%</td><td class="mono">${r.dias_bus}</td></tr>`; }), "Ningún ingreso a mantenimiento en el rango.");
 }
 
-function reiterativos() {
-  const R = T.reiterativos;
-  $("n-reit").textContent = `${R.reiterativos} buses entraron a mantenimiento ${T.umbral} veces o más en el rango y suman ${R.ingresos_reiterativos} de ${R.ingresos} ingresos` +
-    (R.ingresos ? ` (${num(R.ingresos_reiterativos / R.ingresos * 100)}%).` : ".") + (T.listado ? "" : " El perfil invitado ve solo la distribución.");
-  grafico("c-reit", {type: "bar", data: {labels: R.distribucion.map(([k]) => k + (k === 1 ? " ingreso" : " ingresos")),
-      datasets: [barra_("Buses", R.distribucion.map(([, n]) => n), R.distribucion.map(([k]) => k >= T.umbral ? css("--mt") : css("--s0")))]},
-    options: {scales: {x: {grid: {display: false}}, y: {beginAtZero: true, ticks: {precision: 0}, title: {display: true, text: "Buses"}}},
-      plugins: {legend: {display: false}, title: {display: true, text: "Buses según cuántas veces entraron a mantenimiento (rojo: reiterativos)", align: "start"}}}});
-  $("t-reit").innerHTML = tabla(["Interno", "Ingresos", "Días en mant.", "Motivos", "Último ingreso"], R.lista.map(b =>
-    `<tr><td class="mono"><b>${esc(b.interno)}</b></td><td class="mono">${b.ingresos}</td><td class="mono">${b.dias_mt}</td><td>${tags(b.motivos)}</td><td class="mono">${esc(b.ultimo)}</td></tr>`),
-    "Ningún bus reiterativo en el rango.");
-}
-
 function reincidencia() {
   const R = T.reincidencia;
   $("n-reinc").textContent = `Buses que vuelven a mantenimiento hasta ${T.dias_reincidencia} días después de haber vuelto a operar: ${R.total} casos` +
@@ -326,7 +303,6 @@ $("grano").addEventListener("click", e => {
   guardarPref("tab-grano", grano); cargar();
 });
 $("aplicar").onclick = cargar;
-$("umbral").onchange = cargar;
 matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => T && pintar());
 
 (async () => {

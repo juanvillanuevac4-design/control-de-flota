@@ -526,7 +526,7 @@ def cabeceras_seguridad(resp):
     h["Cross-Origin-Opener-Policy"] = "same-origin"
     if request.is_secure or EN_RENDER:
         h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    if request.path.startswith("/api/") or request.path in ("/", "/dashboard", "/tableros", "/admin", "/login", "/privacidad"):
+    if request.path.startswith("/api/") or request.path in ("/", "/dashboard", "/tableros", "/reiterativos", "/admin", "/login", "/privacidad"):
         h["Cache-Control"] = "no-store"  # datos de la flota y del personal: que no queden en cachés
     return resp
 
@@ -593,6 +593,11 @@ def dashboard_page():
 @app.get("/tableros")
 def tableros_page():
     return pagina("tableros.html")
+
+
+@app.get("/reiterativos")
+def reiterativos_page():
+    return pagina("reiterativos.html")
 
 
 @app.get("/admin")
@@ -1132,9 +1137,7 @@ def _calidad(cx, desde, hasta, eventos):
     return {"usuarios": usuarios, "dias": dias}
 
 
-@app.get("/api/tableros")
-@requiere_login
-def api_tableros():
+def _rango_pedido():
     a = request.args
     hoy = ahora().date()
     hasta = min(parse_fecha(a.get("hasta"), hoy), hoy)
@@ -1142,11 +1145,31 @@ def api_tableros():
     if desde > hasta:
         desde, hasta = hasta, desde
     desde = max(desde, hasta - timedelta(days=MAX_DIAS_TABLEROS - 1))
-    grano = a.get("grano") if a.get("grano") in ("dia", "semana", "mes") else "dia"
     try:
         umbral = min(max(int(a.get("umbral", 2)), 2), 20)
     except ValueError:
         umbral = 2
+    return desde, hasta, umbral
+
+
+def _episodios_del_rango(eventos, semilla, previo, desde, hasta):
+    """Episodios que tocan el rango (todos) y los que empiezan en él (rango). Un episodio que terminó después
+    del rango se trata como abierto al final del rango."""
+    fin_def = min(ahora(), datetime(hasta.year, hasta.month, hasta.day, 23, 59, 59, tzinfo=TZ))
+    ini_rango = datetime(desde.year, desde.month, desde.day, tzinfo=TZ)
+    todos = [ep for ep in _episodios(eventos, semilla, datetime(previo.year, previo.month, previo.day, tzinfo=TZ))
+             if ep["inicio"] <= fin_def]
+    for ep in todos:
+        if ep["fin"] and ep["fin"] > fin_def:
+            ep["fin"] = None
+    return todos, [ep for ep in todos if ep["inicio"] >= ini_rango], fin_def
+
+
+@app.get("/api/tableros")
+@requiere_login
+def api_tableros():
+    desde, hasta, umbral = _rango_pedido()
+    grano = request.args.get("grano") if request.args.get("grano") in ("dia", "semana", "mes") else "dia"
     h_desde = max(desde, hasta - timedelta(days=MAX_DIAS_HORAS - 1))
     previo = desde - timedelta(days=DIAS_PREVIOS)
     punta = _horas_punta()
@@ -1159,16 +1182,9 @@ def api_tableros():
         metas = metas_vigentes(cx)
         calidad = _calidad(cx, desde, hasta, [e for e in eventos if e["fecha"] >= desde]) if u["rol"] == "admin" else None
     listado = not es_invitado()
-    fin_def = min(ahora(), datetime(hasta.year, hasta.month, hasta.day, 23, 59, 59, tzinfo=TZ))
-    ini_rango = datetime(desde.year, desde.month, desde.day, tzinfo=TZ)
 
     # Episodios: los del rango son los que empiezan en él; los abiertos al final sirven para el ranking.
-    todos = [ep for ep in _episodios(eventos, semilla_ep, datetime(previo.year, previo.month, previo.day, tzinfo=TZ))
-             if ep["inicio"] <= fin_def]
-    for ep in todos:
-        if ep["fin"] and ep["fin"] > fin_def:
-            ep["fin"] = None   # para el rango elegido, seguía en mantenimiento al final
-    rango = [ep for ep in todos if ep["inicio"] >= ini_rango]
+    todos, rango, fin_def = _episodios_del_rango(eventos, semilla_ep, previo, desde, hasta)
     abiertos = sorted((ep for ep in todos if not ep["fin"]), key=lambda ep: ep["inicio"])
 
     # Reincidencia: vuelve a mantenimiento hasta 7 días después de haber vuelto a operar.
@@ -1241,10 +1257,7 @@ def api_tableros():
                  "mediana_h": _mediana([_horas(ep, fin_def) for ep in rango if ep["fin"]]), "reparados": sum(1 for ep in rango if ep["fin"])},
         reiterativos={"ingresos": total_ing, "buses_con_ingreso": len(por_bus), "reiterativos": len(reit),
                       "ingresos_reiterativos": sum(b["ingresos"] for _, b in reit),
-                      "distribucion": [[k, distrib[k]] for k in sorted(distrib)],
-                      "lista": [{"interno": i, "ingresos": b["ingresos"], "dias_mt": dias_mt.get(i, 0),
-                                 "ultimo": b["ultimo"].strftime("%d-%m-%Y"),
-                                 "motivos": sorted(b["motivos"].items(), key=lambda kv: -kv[1])} for i, b in reit] if listado else []},
+                      "distribucion": [[k, distrib[k]] for k in sorted(distrib)]},
         reincidencia={"total": len(reincid), "tasa": round(len(reincid) / total_ing * 100, 1) if total_ing else None,
                       "lista": reincid if listado else []},
         pareto=filas_pareto,
@@ -1258,6 +1271,73 @@ def api_tableros():
         punta={"cumplimiento": cumplimiento, "dias": punta_dias, "metas": metas},
         calidad=calidad, generado=ahora_.strftime("%d-%m-%Y %H:%M"),
     )
+
+
+@app.get("/api/reiterativos")
+@requiere_login
+def api_reiterativos():
+    """Buses que entran a mantenimiento `umbral` veces o más en el rango, con sus tipos de falla (motivos) y cada ingreso.
+    Se identifican solo por interno. El invitado recibe solo agregados."""
+    desde, hasta, umbral = _rango_pedido()
+    previo = desde - timedelta(days=DIAS_PREVIOS)
+    with conectar() as cx:
+        diario = estado_diario(cx, desde, hasta)
+        eventos = _eventos(cx, previo, hasta)
+        semilla = _semilla(cx, previo)
+        tipos = {r["interno"]: r["tipo_bus"] for r in cx.execute("SELECT interno, tipo_bus FROM buses").fetchall()}
+    todos, rango, fin_def = _episodios_del_rango(eventos, semilla, previo, desde, hasta)
+    dias_mt = {}
+    for f in diario:
+        if f["operativo"] == "Mantenimiento":
+            _contar(dias_mt, f["interno"])
+    # Fin del episodio anterior de cada bus, para marcar las reincidencias (vuelve a fallar <= 7 días después).
+    ultimo_fin, reinc = {}, set()
+    for ep in sorted(todos, key=lambda ep: ep["inicio"]):
+        prev = ultimo_fin.get(ep["interno"])
+        if prev and (ep["inicio"] - prev).total_seconds() <= DIAS_REINCIDENCIA * 86400:
+            reinc.add(id(ep))
+        if ep["fin"]:
+            ultimo_fin[ep["interno"]] = ep["fin"]
+    por_bus = {}
+    for ep in sorted(rango, key=lambda ep: ep["inicio"]):
+        por_bus.setdefault(ep["interno"], []).append(ep)
+    distrib = {}
+    for eps in por_bus.values():
+        _contar(distrib, len(eps))
+    reit = {i: eps for i, eps in por_bus.items() if len(eps) >= umbral}
+    mot_ing, mot_buses, mot_horas = {}, {}, {}
+    buses = []
+    for i, eps in reit.items():
+        mot = {}
+        for ep in eps:
+            _contar(mot, ep["motivo"]); _contar(mot_ing, ep["motivo"]); _contar(mot_horas, ep["motivo"], _horas(ep, fin_def))
+        for k in mot:
+            _contar(mot_buses, k)
+        principal = max(mot.items(), key=lambda kv: kv[1])
+        buses.append({
+            "interno": i, "tipo_bus": tipos.get(i, ""), "ingresos": len(eps), "dias_mt": dias_mt.get(i, 0),
+            "horas_fuera": round(sum(_horas(ep, fin_def) for ep in eps), 1), "motivos": mot,
+            "principal": principal[0], "repite": principal[1] > 1, "reincidencias": sum(id(ep) in reinc for ep in eps),
+            "detenido": eps[-1]["fin"] is None, "primero": eps[0]["inicio"].strftime("%d-%m-%Y"),
+            "ultimo": eps[-1]["inicio"].strftime("%d-%m-%Y"),
+            "episodios": [{"inicio": ep["inicio"].strftime("%d-%m-%Y %H:%M"),
+                           "fin": ep["fin"].strftime("%d-%m-%Y %H:%M") if ep["fin"] else "",
+                           "horas": round(_horas(ep, fin_def), 1), "motivo": ep["motivo"], "terminal": ep["terminal"],
+                           "reincidencia": id(ep) in reinc} for ep in eps]})
+    buses.sort(key=lambda b: (-b["ingresos"], -b["horas_fuera"]))
+    motivos = [{"motivo": k, "ingresos": n, "buses": mot_buses[k], "horas": round(mot_horas[k], 1)}
+               for k, n in sorted(mot_ing.items(), key=lambda kv: -kv[1])]
+    listado = not es_invitado()
+    return jsonify(
+        desde=desde.isoformat(), hasta=hasta.isoformat(), umbral=umbral, listado=listado, dias_reincidencia=DIAS_REINCIDENCIA,
+        generado=ahora().strftime("%d-%m-%Y %H:%M"),
+        resumen={"ingresos": len(rango), "buses_con_ingreso": len(por_bus), "reiterativos": len(reit),
+                 "ingresos_reiterativos": sum(len(e) for e in reit.values()),
+                 "horas_reiterativos": round(sum(b["horas_fuera"] for b in buses), 1),
+                 "horas_total": round(sum(_horas(ep, fin_def) for ep in rango), 1),
+                 "detenidos": sum(b["detenido"] for b in buses), "mismo_motivo": sum(b["repite"] for b in buses),
+                 "distribucion": [[k, distrib[k]] for k in sorted(distrib)]},
+        motivos=motivos, buses=buses if listado else [])
 
 
 def _resumen_contar(eps, clave):
