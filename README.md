@@ -61,5 +61,6 @@ La app puede trabajar con un rol `flota_app` que no es dueño de nada: no puede 
 
 ## Privacidad (Ley 19.628 / Ley 21.719)
 
-- `/privacidad`: aviso de privacidad, enlazado desde el ingreso y la barra superior. Completa `PRIVACIDAD_RESPONSABLE` (razón social), `PRIVACIDAD_CONTACTO` (correo para derechos) y `PRIVACIDAD_RETENCION` (plazo de conservación) en Render.
+- `/privacidad`: aviso de privacidad, enlazado desde el ingreso y la barra superior. Completa `PRIVACIDAD_RESPONSABLE` (razón social), `PRIVACIDAD_CONTACTO` (correo para derechos) en Render. `PRIVACIDAD_RETENCION` ya dice 3 años por defecto.
 - "Mis datos" (barra superior): cada persona descarga sus datos y todas sus acciones registradas (derecho de acceso). La descarga queda en la bitácora.
+- **Retención: 3 años.** `purgar.py` borra la bitácora anterior al corte y anonimiza nombres y usuarios en el historial (el estado de los buses se conserva). Es la única excepción a la regla de solo agregar: se corre a mano con `DATABASE_URL_ADMIN`, primero sin argumentos (simulación) y luego con `--ejecutar`, y deja en la bitácora un evento con el corte y las cantidades. Correrlo una vez al año (la primera vez con datos que purgar será en noviembre de 2029).

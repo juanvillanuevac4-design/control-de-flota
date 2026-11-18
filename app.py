@@ -600,8 +600,8 @@ def privacidad_page():
     html = (Path(app.static_folder) / "privacidad.html").read_text(encoding="utf-8")
     for k, d in (("PRIVACIDAD_RESPONSABLE", "la empresa que opera el depósito"),
                  ("PRIVACIDAD_CONTACTO", "el administrador del sistema"),
-                 ("PRIVACIDAD_RETENCION", "el tiempo que dure tu relación con la empresa y luego el plazo que exija la ley "
-                                          "o la defensa ante reclamos")):
+                 ("PRIVACIDAD_RETENCION", "3 años desde cada registro. Pasado ese plazo, el registro de acciones se borra y "
+                                          "en el historial de la flota tu nombre y usuario se reemplazan por \"anonimizado\"")):
         html = html.replace("{{" + k + "}}", _env_html(k, d))
     return Response(html, mimetype="text/html")
 
