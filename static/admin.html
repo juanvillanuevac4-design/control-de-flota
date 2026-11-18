@@ -43,9 +43,12 @@ td .row{gap:6px;align-items:center}
   </section>
 
   <section class="card pad">
-    <h2>Flota requerida en hora punta</h2>
-    <p class="note" style="margin-bottom:10px" id="n-metas">Buses operativos que necesita cada terminal en hora punta. Se usa en Tableros para medir la brecha. Cada cambio queda en la bitácora.</p>
-    <div class="scroll"><table><thead><tr><th>Terminal</th><th>Buses requeridos</th></tr></thead><tbody id="t-metas"></tbody></table></div>
+    <h2>Meta de disponibilidad</h2>
+    <p class="note" style="margin-bottom:10px">Porcentaje de la flota que debe estar operativa. Tableros compara contra esta meta (evolución, por hora, hora punta y terminales). Cada cambio queda en la bitácora.</p>
+    <form class="row" id="f-meta">
+      <label class="f">Meta (%)<input id="meta" type="number" min="1" max="100" step="0.1" required style="width:110px"></label>
+      <button class="btn">Guardar meta</button>
+    </form>
   </section>
 
   <section class="card pad">
@@ -78,9 +81,7 @@ async function cargar() {
     <td><div class="row"><input type="password" placeholder="Nueva contraseña" data-pw="${u.id}" autocomplete="new-password" minlength="8"><button class="btn sec" data-setpw="${u.id}">Cambiar</button></div></td></tr>`).join("");
   $("t-b").innerHTML = d.buses.map(b => `<tr class="${b.activo ? "" : "off"}"><td class="mono"><b>${esc(b.interno)}</b></td><td class="mono">${esc(b.placa)}</td><td>${esc(b.tipo_bus)}</td><td>${esc(b.tipo_flota)}</td><td>${esc(b.marca_chasis)}</td><td>${esc(b.terminal_op)}</td>
     <td><button class="btn sec" data-bus="${b.id}" data-v="${b.activo ? 0 : 1}">${b.activo ? "Desactivar" : "Activar"}</button></td></tr>`).join("");
-  $("n-metas").textContent = `Buses operativos que necesita cada terminal en hora punta (${d.horas_punta.map(h => String(h).padStart(2, "0")).join(", ")} h). Se usa en Tableros para medir la brecha. Cada cambio queda en la bitácora.`;
-  $("t-metas").innerHTML = d.terminales.map(t => `<tr><td><b>${esc(t)}</b></td>
-    <td><div class="row"><input type="number" min="0" max="1000" step="1" data-meta="${esc(t)}" value="${d.metas[t] ?? ""}" placeholder="Sin meta" style="width:110px"><button class="btn sec" data-gmeta="${esc(t)}">Guardar</button></div></td></tr>`).join("");
+  $("meta").value = d.meta;
   $("t-m").innerHTML = d.motivos.map(m => `<tr class="${m.activo ? "" : "off"}"><td><b>${esc(m.nombre)}</b></td>
     <td><div class="row"><input data-mn="${m.id}" value="${esc(m.nombre)}" maxlength="120"><button class="btn sec" data-mren="${m.id}">Guardar</button></div></td>
     <td><button class="btn sec" data-mot="${m.id}" data-v="${m.activo ? 0 : 1}">${m.activo ? "Desactivar" : "Activar"}</button></td></tr>`).join("");
@@ -94,7 +95,6 @@ document.addEventListener("click", e => {
     hacer(`/api/admin/usuarios/${t.dataset.setpw}`, {clave: v}, "Contraseña cambiada."); }
   if (t.dataset.mot) hacer("/api/admin/motivos", {id: +t.dataset.mot, activo: t.dataset.v === "1"}, "Motivo actualizado.");
   if (t.dataset.mren) hacer("/api/admin/motivos", {id: +t.dataset.mren, nombre: document.querySelector(`[data-mn="${t.dataset.mren}"]`).value}, "Motivo renombrado.");
-  if (t.dataset.gmeta) hacer("/api/admin/metas", {terminal: t.dataset.gmeta, requeridos: document.querySelector(`[data-meta="${t.dataset.gmeta}"]`).value}, "Meta guardada.");
   if (t.dataset.bus) hacer("/api/admin/buses", {id: +t.dataset.bus, activo: t.dataset.v === "1"}, "Bus actualizado.");
 });
 $("f-u").addEventListener("submit", async e => { e.preventDefault();
@@ -103,6 +103,7 @@ $("f-u").addEventListener("submit", async e => { e.preventDefault();
 $("f-m").addEventListener("submit", async e => { e.preventDefault();
   await hacer("/api/admin/motivos", {nombre: $("m-nombre").value}, "Motivo agregado.");
   if (!$("msg").classList.contains("err")) e.target.reset(); });
+$("f-meta").addEventListener("submit", e => { e.preventDefault(); hacer("/api/admin/meta", {meta: $("meta").value}, "Meta de disponibilidad guardada."); });
 $("f-b").addEventListener("submit", async e => { e.preventDefault();
   const b = {}; ["placa", "interno", "tipo_bus", "tipo_flota", "marca_chasis", "terminal_op"].forEach(k => b[k] = $("b-" + k).value);
   await hacer("/api/admin/buses", b, "Bus agregado.");

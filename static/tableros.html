@@ -34,6 +34,7 @@ h1{font-size:1.45rem;font-weight:800}
 .heat td.l1{background:var(--q1)}.heat td.l2{background:var(--q2)}.heat td.l3{background:var(--q3)}.heat td.l4{background:var(--q4);color:#fff}
 .heat td.l5{background:var(--q5)}.heat td.l6{background:var(--q6)}.heat td.l7{background:var(--q7)}
 .heat td.p{outline:1.5px solid var(--fg);outline-offset:-1.5px}
+.kpi small .pill{display:inline-block;width:auto}
 .leyenda{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;font-size:.78rem;color:var(--muted);margin-top:8px}
 .leyenda i{display:inline-block;width:18px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:4px}
 tr.p80 td:first-child{box-shadow:inset 3px 0 var(--accent)}
@@ -88,9 +89,9 @@ td.mono{white-space:nowrap}
     <div class="leyenda" id="heat-ley"></div>
   </section>
 
-  <!-- 3 · Hora punta frente a flota requerida -->
+  <!-- 3 · Hora punta frente a la meta de disponibilidad -->
   <section class="card pad">
-    <h2>Hora punta frente a la flota requerida</h2>
+    <h2>Hora punta frente a la meta de disponibilidad</h2>
     <p class="note" id="n-punta"></p>
     <div class="grid2">
       <div class="scroll" id="t-punta"></div>
@@ -153,6 +154,9 @@ const hoyISO = () => new Date(Date.now() - new Date().getTimezoneOffset() * 6e4)
 const num = (v, d = 1) => v === null || v === undefined ? "–" : Number(v).toLocaleString("es-CL", {maximumFractionDigits: d});
 const dias = h => h === null || h === undefined ? "–" : num(h / 24) + " d";
 const kpi = (t, v, s = "") => `<div class="kpi"><span>${t}</span><b>${v}</b>${s ? `<small>${s}</small>` : ""}</div>`;
+// Brecha en puntos frente a la meta de disponibilidad, como etiqueta verde (cumple) o roja (bajo la meta).
+const brecha = v => v === null || v === undefined ? "–" : `<span class="pill ${v >= T.meta ? "p-ok" : "p-mt"}">${v - T.meta >= 0 ? "+" : ""}${num(v - T.meta)} pts</span>`;
+const lineaMeta = n => linea(`Meta ${num(T.meta)}%`, Array(n).fill(T.meta), css("--fg"), {borderDash: [4, 4], pointRadius: 0, pointHoverRadius: 0, borderWidth: 1.5});
 const tabla = (cab, filas, vacio = "Sin datos en el rango.") => filas.length
   ? `<table><thead><tr>${cab.map(c => `<th>${c}</th>`).join("")}</tr></thead><tbody>${filas.join("")}</tbody></table>`
   : `<p class="vacio">${vacio}</p>`;
@@ -179,7 +183,7 @@ async function cargar() {
 function pintar() {
   const E = T.evolucion;
   const op = E.reduce((a, p) => a + p.op * p.dias, 0), tot = E.reduce((a, p) => a + (p.op + p.mt) * p.dias, 0);
-  $("kpis").innerHTML = kpi("Disponibilidad promedio", tot ? num(op / tot * 100) + "%" : "–", `${E.reduce((a, p) => a + p.dias, 0)} días con reporte`) +
+  $("kpis").innerHTML = kpi("Disponibilidad promedio", tot ? num(op / tot * 100) + "%" : "–", tot ? brecha(op / tot * 100) + ` · meta ${num(T.meta)}%` : "") +
     kpi("Ingresos a mantenimiento", T.reiterativos.ingresos, `${T.reiterativos.buses_con_ingreso} buses distintos`) +
     kpi("Tiempo fuera de servicio", dias(T.tiempos.mediana_h), `mediana de ${T.tiempos.reparados} reparaciones`) +
     kpi(`Reincidencia ≤ ${T.dias_reincidencia} días`, T.reincidencia.tasa === null ? "–" : num(T.reincidencia.tasa) + "%", `${T.reincidencia.total} de ${T.reiterativos.ingresos} ingresos`) +
@@ -193,8 +197,8 @@ function evolucion() {
   const tip = {callbacks: {footer: it => { const p = E[it[0].dataIndex]; return grano === "dia" ? "" : `${p.dias} días con reporte (${fmtFecha(p.desde)} a ${fmtFecha(p.hasta)})`; }}};
   grafico("c-evo", {type: "bar", data: {labels: L, datasets: [barra_("Operativo", E.map(p => p.op), css("--ok")), barra_("Mantenimiento", E.map(p => p.mt), css("--mt"))]},
     options: {scales: {x: {stacked: true, grid: {display: false}}, y: {stacked: true, beginAtZero: true, title: {display: true, text: unidad}}}, plugins: {tooltip: tip, title: {display: true, text: "Buses por estatus", align: "start"}}}});
-  grafico("c-disp", {type: "line", data: {labels: L, datasets: [linea("Disponibilidad", E.map(p => p.disp), css("--accent"), {fill: false})]},
-    options: {scales: {x: {grid: {display: false}}, y: {suggestedMin: piso(E.map(p => p.disp)), max: 100, ticks: {callback: v => v + "%"}}}, plugins: {legend: {display: false}, tooltip: {callbacks: {label: c => ` Disponibilidad ${num(c.raw)}%`}}, title: {display: true, text: "% de la flota operativa", align: "start"}}}});
+  grafico("c-disp", {type: "line", data: {labels: L, datasets: [linea("Disponibilidad", E.map(p => p.disp), css("--accent"), {fill: false}), lineaMeta(L.length)]},
+    options: {scales: {x: {grid: {display: false}}, y: {suggestedMin: piso([...E.map(p => p.disp), T.meta]), max: 100, ticks: {callback: v => v + "%"}}}, plugins: {legend: {display: true, position: "bottom"}, tooltip: {callbacks: {label: c => ` ${c.dataset.label.startsWith("Meta") ? "Meta" : "Disponibilidad"} ${num(c.raw)}%`}}, title: {display: true, text: "% de la flota operativa", align: "start"}}}});
   // Motivos: los 6 más frecuentes del rango con su color fijo; el resto en «Otros motivos».
   const tot = {}; E.forEach(p => Object.entries(p.motivos).forEach(([k, v]) => tot[k] = (tot[k] || 0) + v * p.dias));
   const orden = Object.keys(tot).sort((a, b) => tot[b] - tot[a]), top = orden.slice(0, 6), resto = orden.slice(6);
@@ -206,42 +210,39 @@ function evolucion() {
 
 // Eje de % que no exagera diferencias pequeñas: parte al menos 10 puntos bajo el mínimo.
 const piso = vs => { const m = Math.min(...vs.filter(v => v !== null)); return isFinite(m) ? Math.max(0, Math.floor((m - 10) / 10) * 10) : 0; };
-const nivel = v => v === null ? "v" : "l" + (v >= 97 ? 7 : v >= 93 ? 6 : v >= 89 ? 5 : v >= 85 ? 4 : v >= 80 ? 3 : v >= 70 ? 2 : 1);
+// Niveles del mapa de calor medidos contra la meta: el azul más oscuro es cumplir la meta.
+const CORTES = [0, -3, -6, -10, -15, -25];
+const nivel = v => v === null ? "v" : "l" + (7 - Math.max(0, CORTES.findIndex(c => v - T.meta >= c) === -1 ? 6 : CORTES.findIndex(c => v - T.meta >= c)));
 function porHora() {
   const H = T.horas, L = [...Array(24).keys()].map(h => String(h).padStart(2, "0") + ":00");
   $("n-hora").textContent = `Porcentaje de la flota operativa al final de cada hora, del ${fmtFecha(H.desde)} al ${fmtFecha(T.hasta)}` +
     (H.desde > T.desde ? " (se usan como máximo los últimos 120 días del rango)." : ".") + " Las horas punta van marcadas con borde en el mapa.";
-  grafico("c-hora", {type: "line", data: {labels: L, datasets: [linea("Lunes a viernes", H.habil, css("--s1")), linea("Sábado y domingo", H.finde, css("--s2"), {borderDash: [6, 4]})]},
-    options: {scales: {x: {grid: {display: false}}, y: {suggestedMin: piso([...H.habil, ...H.finde]), max: 100, ticks: {callback: v => v + "%"}}}, plugins: {tooltip: {callbacks: {label: c => ` ${c.dataset.label}: ${num(c.raw)}%`}}}}});
+  grafico("c-hora", {type: "line", data: {labels: L, datasets: [linea("Lunes a viernes", H.habil, css("--s1")), linea("Sábado y domingo", H.finde, css("--s2"), {borderDash: [6, 4]}), lineaMeta(24)]},
+    options: {scales: {x: {grid: {display: false}}, y: {suggestedMin: piso([...H.habil, ...H.finde, T.meta]), max: 100, ticks: {callback: v => v + "%"}}}, plugins: {tooltip: {callbacks: {label: c => ` ${c.dataset.label}: ${num(c.raw)}%`}}}}});
   const P = new Set(T.horas_punta);
   $("heat").innerHTML = H.dias.length ? `<table class="heat"><thead><tr><th class="d"></th>${L.map((l, h) => `<th>${String(h).padStart(2, "0")}</th>`).join("")}</tr></thead><tbody>` +
     H.dias.slice().reverse().map(d => `<tr><th class="d">${diaSemana(d.fecha).slice(0, 3)} ${fmtFecha(d.fecha).slice(0, 5)}</th>` +
       d.h.map((v, h) => `<td class="${nivel(v)}${P.has(h) ? " p" : ""}" title="${fmtFecha(d.fecha)} ${L[h]}: ${v === null ? "sin dato" : num(v) + "% operativa"}">${v === null ? "" : Math.round(v)}</td>`).join("") + "</tr>").join("") + "</tbody></table>"
     : '<p class="vacio">Sin datos en el rango.</p>';
-  $("heat-ley").innerHTML = "Operativa:" + [["l1", "< 70%"], ["l2", "70–79"], ["l3", "80–84"], ["l4", "85–88"], ["l5", "89–92"], ["l6", "93–96"], ["l7", "≥ 97%"]]
+  const m = T.meta, r = x => num(m + x);
+  $("heat-ley").innerHTML = "Operativa:" + [["l1", `< ${r(-25)}%`], ["l2", `${r(-25)}–${r(-15)}`], ["l3", `${r(-15)}–${r(-10)}`], ["l4", `${r(-10)}–${r(-6)}`], ["l5", `${r(-6)}–${r(-3)}`], ["l6", `${r(-3)}–${r(0)}`], ["l7", `≥ ${r(0)}% (meta)`]]
     .map(([c, t]) => `<span><i style="background:var(--q${c[1]})"></i>${t}</span>`).join("") + '<span><i style="outline:1.5px solid var(--fg);outline-offset:-1.5px;background:var(--surface2)"></i>hora punta</span>';
 }
 
 function punta() {
   const P = T.punta, hs = T.horas_punta.map(h => String(h).padStart(2, "0")).join(", ");
-  const conMeta = Object.keys(P.metas).length;
-  $("n-punta").textContent = `Horas punta: ${hs} h (variable HORAS_PUNTA en Render). Buses operativos por terminal en esas horas, frente a la flota requerida que carga un administrador en «Usuarios, motivos y buses».` +
-    (conMeta ? "" : " Aún no hay metas cargadas.");
-  const filas = P.cumplimiento.filter(c => c.meta !== null || c.prom);
-  $("t-punta").innerHTML = tabla(["Terminal", "Requeridos", "Operativos (prom.)", "Mínimo", "Brecha", "Horas punta que cumplen"], filas.map(c => {
-    const br = c.meta === null || c.prom === null ? null : c.prom - c.meta;
-    return `<tr><td><b>${esc(c.terminal)}</b></td><td class="mono">${c.meta ?? "sin meta"}</td><td class="mono">${num(c.prom)}</td><td class="mono">${c.minimo ?? "–"}</td>
-      <td class="mono">${br === null ? "–" : `<span class="pill ${br >= 0 ? "p-ok" : "p-mt"}">${br > 0 ? "+" : ""}${num(br)}</span>`}</td>
-      <td class="mono">${c.pct_cumple === null ? "–" : `<span class="pill ${c.pct_cumple >= 95 ? "p-ok" : "p-mt"}">${num(c.pct_cumple)}%</span>`}</td></tr>`; }));
-  const ts = T.terminales.filter(t => P.dias.some(d => d.min[t]) || P.metas[t] !== undefined), L = P.dias.map(d => fmtFecha(d.fecha).slice(0, 5));
-  const ds = [];
-  ts.forEach((t, i) => {
-    ds.push(linea(t, P.dias.map(d => d.min[t]), css(SERIES[i])));
-    if (P.metas[t] !== undefined) ds.push(linea(`Requeridos ${t}`, P.dias.map(() => P.metas[t]), css(SERIES[i]), {borderDash: [6, 4], pointRadius: 0, borderWidth: 1.5}));
-  });
+  $("n-punta").textContent = `Horas punta: ${hs} h (variable HORAS_PUNTA en Render). % de buses operativos de cada terminal en esas horas, frente a la meta de ${num(T.meta)}% (la cambia un administrador en «Usuarios, motivos y buses»).`;
+  const fila = (nombre, c) => `<tr><td><b>${nombre}</b></td><td class="mono">${c.prom === null ? "–" : num(c.prom) + "%"}</td><td class="mono">${c.minimo === null || c.minimo === undefined ? "–" : num(c.minimo) + "%"}</td>
+    <td class="mono">${brecha(c.prom)}</td><td class="mono">${c.pct_cumple === null ? "–" : `<span class="pill ${c.pct_cumple >= 95 ? "p-ok" : "p-mt"}">${num(c.pct_cumple)}%</span>`}</td></tr>`;
+  const filas = P.cumplimiento.filter(c => c.prom !== null).map(c => fila(esc(c.terminal), c));
+  if (filas.length) filas.push(fila("Toda la flota", P.flota));
+  $("t-punta").innerHTML = tabla(["Terminal", "Disponibilidad (prom.)", "Mínimo", "Frente a la meta", "Horas punta que cumplen"], filas);
+  const ts = T.terminales.filter(t => P.dias.some(d => d.min[t] !== null)), L = P.dias.map(d => fmtFecha(d.fecha).slice(0, 5));
+  const ds = ts.map((t, i) => linea(t, P.dias.map(d => d.min[t]), css(SERIES[i])));
+  ds.push(lineaMeta(L.length));
   grafico("c-punta", {type: "line", data: {labels: L, datasets: ds},
-    options: {scales: {x: {grid: {display: false}}, y: {beginAtZero: true, title: {display: true, text: "Buses operativos (mínimo en punta)"}}},
-      plugins: {title: {display: true, text: "Mínimo diario en hora punta (línea punteada: requeridos)", align: "start"}}}});
+    options: {scales: {x: {grid: {display: false}}, y: {suggestedMin: piso([...ds.flatMap(d => d.data), T.meta]), max: 100, ticks: {callback: v => v + "%"}}},
+      plugins: {tooltip: {callbacks: {label: c => ` ${c.dataset.label}: ${num(c.raw)}%`}}, title: {display: true, text: "Peor hora punta de cada día, % operativo por terminal", align: "start"}}}});
 }
 
 function tiempos() {
@@ -280,11 +281,11 @@ function detenidos() {
 }
 
 function terminales() {
-  $("t-term").innerHTML = tabla(["Terminal", "Buses (prom.)", "Operativos (prom.)", "Disponibilidad", "Ingresos a mant.", "Tiempo de reparación (mediana)", "Reincidencias", "Requeridos en punta"],
-    T.terminales_cmp.filter(t => t.buses_prom || t.ingresos || t.meta !== null).map(t =>
+  $("t-term").innerHTML = tabla(["Terminal", "Buses (prom.)", "Operativos (prom.)", "Disponibilidad", "Ingresos a mant.", "Tiempo de reparación (mediana)", "Reincidencias"],
+    T.terminales_cmp.filter(t => t.buses_prom || t.ingresos).map(t =>
       `<tr><td><b>${esc(t.terminal)}</b></td><td class="mono">${num(t.buses_prom)}</td><td class="mono">${num(t.op_prom)}</td>
-       <td class="mono">${t.disp === null ? "–" : num(t.disp) + "%"}</td><td class="mono">${t.ingresos}</td><td class="mono">${dias(t.mediana_h)}</td>
-       <td class="mono">${t.reincidencias}</td><td class="mono">${t.meta ?? "–"}</td></tr>`));
+       <td class="mono">${t.disp === null ? "–" : num(t.disp) + "% " + brecha(t.disp)}</td><td class="mono">${t.ingresos}</td><td class="mono">${dias(t.mediana_h)}</td>
+       <td class="mono">${t.reincidencias}</td></tr>`));
 }
 
 function calidad() {
