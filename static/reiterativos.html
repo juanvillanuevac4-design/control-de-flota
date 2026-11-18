@@ -1,0 +1,161 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Reiterativos · Control de Flota</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Archivo:wght@400;500;600;700;800&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+<link rel="stylesheet" href="/static/base.css">
+<script src="/static/chart.umd.min.js"></script>
+<style>
+:root{--s0:#8a918e;--q1:#f8dcd8;--q2:#f0a99f;--q3:#e0675a;--q4:#b83227}
+@media (prefers-color-scheme: dark){:root:not([data-theme="light"]){--s0:#7c8682;--q1:#43201c;--q2:#7a2e25;--q3:#b8453a;--q4:#f0705f}}
+:root[data-theme="dark"]{--s0:#7c8682;--q1:#43201c;--q2:#7a2e25;--q3:#b8453a;--q4:#f0705f}
+h1{font-size:1.45rem;font-weight:800}
+.card h2{font-size:1.05rem;margin:0 0 4px}
+.card .note{margin-bottom:10px}
+.grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:12px}
+.chart{position:relative;height:300px}
+.filtros{display:flex;flex-wrap:wrap;gap:10px 14px;align-items:flex-end}
+td.mono{white-space:nowrap}
+.bar-in{display:inline-block;height:8px;border-radius:0 4px 4px 0;background:var(--mt);vertical-align:middle;margin-right:6px}
+/* Matriz bus × tipo de falla: más intenso = más veces esa falla */
+table.mat th.m{writing-mode:vertical-rl;transform:rotate(180deg);text-transform:none;letter-spacing:0;white-space:nowrap;padding:6px 2px;font-size:.72rem;max-height:150px;vertical-align:bottom}
+table.mat td.c{text-align:center;font:700 .78rem var(--f-mono);min-width:30px;padding:4px}
+td.c.n1{background:var(--q1);color:var(--fg)} td.c.n2{background:var(--q2);color:var(--fg)} td.c.n3{background:var(--q3);color:#fff} td.c.n4{background:var(--q4);color:#fff}
+table.mat tr.fila{cursor:pointer}
+table.mat tr.fila:hover td{background:var(--surface2)}
+table.mat tr.fila:hover td.c.n1,table.mat tr.fila:hover td.c.n2,table.mat tr.fila:hover td.c.n3,table.mat tr.fila:hover td.c.n4{filter:brightness(.95)}
+.abrir{background:none;border:0;color:var(--accent);font:700 .95rem var(--f-mono);cursor:pointer;padding:0}
+tr.det td{background:var(--surface2);padding:8px 12px}
+tr.det table{background:var(--surface)}
+.leyenda{display:flex;flex-wrap:wrap;gap:4px 10px;align-items:center;font-size:.78rem;color:var(--muted);margin-top:8px}
+.leyenda i{display:inline-block;width:18px;height:12px;border-radius:3px;vertical-align:-2px;margin-right:4px}
+body.invitado .solo-listado{display:none!important}
+.solo-invitado{display:none} body.invitado .solo-invitado{display:block}
+.vacio{color:var(--muted);font-size:.9rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Buses reiterativos</h1>
+
+  <section class="card pad filtros" aria-label="Filtros">
+    <label class="f">Desde<input type="date" id="desde"></label>
+    <label class="f">Hasta<input type="date" id="hasta"></label>
+    <label class="f">Reiterativo desde<select id="umbral"><option value="2">2 ingresos</option><option value="3" selected>3 ingresos</option><option value="4">4 ingresos</option><option value="5">5 ingresos</option><option value="6">6 ingresos</option></select></label>
+    <button class="btn" id="aplicar">Actualizar</button>
+    <label class="f solo-listado">Buscar interno<input id="buscar" size="8" placeholder="Todos" inputmode="numeric"></label>
+    <label class="f solo-listado">Falla<select id="f-mot"><option value="">Todas</option></select></label>
+    <p class="note" id="gen" style="flex-basis:100%"></p>
+  </section>
+
+  <div id="err" class="msg err" hidden></div>
+  <div class="kpis" id="kpis"></div>
+
+  <div class="grid2">
+    <section class="card pad">
+      <h2>Tipos de falla de los reiterativos</h2>
+      <p class="note">Ingresos a mantenimiento por motivo, solo de los buses reiterativos.</p>
+      <div class="scroll" id="t-mot"></div>
+    </section>
+    <section class="card pad">
+      <h2>¿Cuántas veces entra cada bus?</h2>
+      <p class="note" id="n-dist"></p>
+      <div class="chart"><canvas id="c-dist"></canvas></div>
+    </section>
+  </div>
+
+  <section class="card pad">
+    <h2>Listado de buses reiterativos</h2>
+    <p class="note solo-listado">Cada fila es un bus (número interno) y cada columna un tipo de falla: el número es cuántas veces entró por esa falla en el rango. Toca un bus para ver cada ingreso con su fecha, duración y terminal.</p>
+    <p class="note solo-invitado">El perfil invitado ve solo los totales, sin el listado de buses.</p>
+    <div class="scroll solo-listado" style="max-height:70vh" id="t-buses"></div>
+    <div class="leyenda solo-listado">Veces por falla: <span><i style="background:var(--q1)"></i>1</span><span><i style="background:var(--q2)"></i>2</span><span><i style="background:var(--q3)"></i>3</span><span><i style="background:var(--q4)"></i>4 o más</span>
+      <span>· <span class="pill p-mt">R</span> reincidencia: volvió a fallar ≤ 7 días después de volver a operar</span></div>
+  </section>
+</div>
+<script src="/static/comun.js"></script>
+<script>
+const $ = id => document.getElementById(id);
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const num = (v, d = 1) => v === null || v === undefined ? "–" : Number(v).toLocaleString("es-CL", {maximumFractionDigits: d});
+const dias = h => h === null || h === undefined ? "–" : num(h / 24) + " d";
+const kpi = (t, v, s = "") => `<div class="kpi"><span>${t}</span><b>${v}</b>${s ? `<small>${s}</small>` : ""}</div>`;
+const pct = (a, b) => b ? num(a / b * 100) + "%" : "–";
+const hoyISO = () => new Date(Date.now() - new Date().getTimezoneOffset() * 6e4).toISOString().slice(0, 10);
+let R, grafico_;
+
+async function cargar() {
+  $("err").hidden = true;
+  try { R = await api(`/api/reiterativos?desde=${$("desde").value}&hasta=${$("hasta").value}&umbral=${$("umbral").value}`); }
+  catch (x) { $("err").hidden = false; $("err").textContent = x.message; return; }
+  $("gen").textContent = `Del ${fmtFecha(R.desde)} al ${fmtFecha(R.hasta)} · un bus es reiterativo si entró a mantenimiento ${R.umbral} veces o más en el rango · calculado desde el historial de cambios el ${R.generado}.`;
+  const sel = $("f-mot").value;
+  $("f-mot").innerHTML = '<option value="">Todas</option>' + R.motivos.map(m => `<option ${m.motivo === sel ? "selected" : ""}>${esc(m.motivo)}</option>`).join("");
+  pintar();
+}
+
+function pintar() {
+  const S = R.resumen;
+  $("kpis").innerHTML = kpi("Buses reiterativos", S.reiterativos, `de ${S.buses_con_ingreso} buses que entraron a mantenimiento`) +
+    kpi("Ingresos que suman", S.ingresos_reiterativos, `${pct(S.ingresos_reiterativos, S.ingresos)} de ${S.ingresos} ingresos`) +
+    kpi("Tiempo fuera de servicio", dias(S.horas_reiterativos), `${pct(S.horas_reiterativos, S.horas_total)} del tiempo detenido de la flota`) +
+    kpi("Repiten la misma falla", S.mismo_motivo, "su falla principal se repite") +
+    kpi("Siguen detenidos", S.detenidos, `al ${fmtFecha(R.hasta)}`);
+  const max = Math.max(1, ...R.motivos.map(m => m.ingresos));
+  $("t-mot").innerHTML = R.motivos.length ? `<table><thead><tr><th>Falla</th><th>Ingresos</th><th>Buses</th><th>Tiempo fuera</th></tr></thead><tbody>` +
+    R.motivos.map(m => `<tr><td><b>${esc(m.motivo)}</b></td><td class="mono"><span class="bar-in" style="width:${Math.round(m.ingresos / max * 90)}px"></span>${m.ingresos}</td><td class="mono">${m.buses}</td><td class="mono">${dias(m.horas)}</td></tr>`).join("") +
+    "</tbody></table>" : '<p class="vacio">Ningún bus reiterativo en el rango.</p>';
+  $("n-dist").textContent = `Buses según cuántas veces entraron a mantenimiento en el rango. En rojo, los reiterativos (${R.umbral} o más).`;
+  grafico_?.destroy();
+  Chart.defaults.font.family = css("--f-display"); Chart.defaults.color = css("--muted"); Chart.defaults.borderColor = css("--line");
+  const D = S.distribucion;
+  grafico_ = new Chart($("c-dist"), {type: "bar", data: {labels: D.map(([k]) => k + (k === 1 ? " vez" : " veces")),
+      datasets: [{label: "Buses", data: D.map(([, n]) => n), backgroundColor: D.map(([k]) => k >= R.umbral ? css("--mt") : css("--s0")), borderRadius: 4, maxBarThickness: 48}]},
+    options: {maintainAspectRatio: false, scales: {x: {grid: {display: false}}, y: {beginAtZero: true, ticks: {precision: 0}, title: {display: true, text: "Buses"}}},
+      plugins: {legend: {display: false}, tooltip: {callbacks: {label: c => ` ${c.raw} buses`}}}}});
+  listado();
+}
+
+function listado() {
+  if (!R.listado) return;
+  const q = $("buscar").value.trim(), fm = $("f-mot").value, M = R.motivos.map(m => m.motivo);
+  const bs = R.buses.filter(b => (!q || b.interno.includes(q)) && (!fm || b.motivos[fm]));
+  const nv = n => !n ? "" : "n" + Math.min(n, 4);
+  $("t-buses").innerHTML = bs.length ? `<table class="mat"><thead><tr><th>Interno</th><th>Tipo bus</th><th>Ingresos</th><th>Tiempo fuera</th><th>Falla principal</th>` +
+    M.map(m => `<th class="m" title="${esc(m)}">${esc(m)}</th>`).join("") + `<th>Reinc.</th><th>Estado</th><th>Último ingreso</th></tr></thead><tbody>` +
+    bs.map((b, i) => `<tr class="fila" data-i="${i}"><td class="mono"><button class="abrir" aria-expanded="false" data-i="${i}">${esc(b.interno)}</button></td><td>${esc(b.tipo_bus)}</td>
+      <td class="mono"><b>${b.ingresos}</b></td><td class="mono">${dias(b.horas_fuera)}</td><td>${esc(b.principal)}${b.repite ? ` ×${b.motivos[b.principal]}` : ""}</td>` +
+      M.map(m => `<td class="c ${nv(b.motivos[m])}" title="${esc(b.interno)} · ${esc(m)}: ${b.motivos[m] || 0}">${b.motivos[m] || ""}</td>`).join("") +
+      `<td class="mono">${b.reincidencias ? `<span class="pill p-mt">${b.reincidencias}</span>` : "0"}</td>
+      <td>${b.detenido ? '<span class="pill p-mt">Detenido</span>' : '<span class="pill p-ok">Operativo</span>'}</td><td class="mono">${esc(b.ultimo)}</td></tr>
+      <tr class="det" data-d="${i}" hidden><td colspan="${8 + M.length}"><table><thead><tr><th>#</th><th>Entró</th><th>Volvió a operar</th><th>Duración</th><th>Falla</th><th>Terminal</th></tr></thead><tbody>` +
+        b.episodios.map((e, k) => `<tr><td class="mono">${k + 1}</td><td class="mono">${esc(e.inicio)}${e.reincidencia ? ' <span class="pill p-mt" title="Volvió a fallar ≤ 7 días después de volver a operar">R</span>' : ""}</td>
+          <td class="mono">${e.fin ? esc(e.fin) : "sigue detenido"}</td><td class="mono">${dias(e.horas)}</td><td>${esc(e.motivo)}</td><td>${esc(e.terminal)}</td></tr>`).join("") +
+      "</tbody></table></td></tr>").join("") + "</tbody></table>"
+    : '<p class="vacio">Ningún bus reiterativo con esos filtros.</p>';
+}
+
+$("t-buses").addEventListener("click", e => {
+  const f = e.target.closest("tr.fila"); if (!f) return;
+  const d = $("t-buses").querySelector(`tr[data-d="${f.dataset.i}"]`); d.hidden = !d.hidden;
+  f.querySelector(".abrir").setAttribute("aria-expanded", !d.hidden);
+});
+$("aplicar").onclick = cargar;
+$("umbral").onchange = cargar;
+$("buscar").addEventListener("input", listado);
+$("f-mot").onchange = listado;
+matchMedia("(prefers-color-scheme: dark)").addEventListener("change", () => R && pintar());
+
+(async () => {
+  const yo = await barra("/reiterativos");
+  document.body.classList.add(yo.rol);
+  const h = hoyISO(), d = new Date(h + "T12:00:00"); d.setDate(d.getDate() - 89);
+  $("hasta").value = h; $("hasta").max = h; $("desde").value = d.toISOString().slice(0, 10);
+  await cargar();
+})().catch(x => { $("err").hidden = false; $("err").textContent = x.message; });
+</script>
+</body>
+</html>
