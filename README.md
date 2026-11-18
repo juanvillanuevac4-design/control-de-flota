@@ -44,3 +44,23 @@ DATABASE_URL=postgresql://... ADMIN_CLAVE=algo-seguro gunicorn -w 1 --threads 4 
 - Cabeceras: CSP (solo los scripts propios, por hash), HSTS, X-Frame-Options DENY, nosniff, Referrer-Policy, `Cache-Control: no-store` en datos.
 - Todas las consultas SQL van parametrizadas. Los errores no muestran detalles internos. Envíos de más de 2 MB se rechazan.
 - Perfil invitado: internos, placas y nombres del personal ficticios en todas las respuestas (datos personales, Ley 19.628).
+
+## Mínimo privilegio en la base (Neon)
+
+La app puede trabajar con un rol `flota_app` que no es dueño de nada: no puede borrar filas, ni editar `cambios` o `bitacora`, ni quitar los disparadores que las protegen. Solo el arranque usa el dueño (`DATABASE_URL_ADMIN`) para crear tablas y darle a `flota_app` sus permisos (se reaplican en cada arranque).
+
+1. En el **SQL Editor de Neon** (crear el rol por SQL, no desde la consola, para que no quede en `neon_superuser`):
+   ```sql
+   CREATE TEMP TABLE _c AS SELECT replace(gen_random_uuid()::text || gen_random_uuid()::text, '-', '') AS clave;
+   DO $$ BEGIN EXECUTE format('CREATE ROLE flota_app LOGIN PASSWORD %L', (SELECT clave FROM _c)); END $$;
+   SELECT clave, pg_has_role('flota_app', 'neon_superuser', 'member') AS es_superusuario FROM _c;
+   ```
+   Copia `clave` (y confirma que `es_superusuario` sea `false`).
+2. En **Render → Environment**: crea `DATABASE_URL_ADMIN` con la URL actual de `DATABASE_URL`, y cambia `DATABASE_URL` por la misma URL con `flota_app:<clave>` en lugar del usuario y contraseña. Guarda y despliega.
+3. En los logs del arranque debe aparecer `Permisos del rol flota_app actualizados` y no debe aparecer el aviso `La app usa el rol dueño de la base`.
+
+## Privacidad (Ley 19.628 / Ley 21.719)
+
+- `/privacidad`: aviso de privacidad, enlazado desde el ingreso y la barra superior. Completa `PRIVACIDAD_RESPONSABLE` (razón social), `PRIVACIDAD_CONTACTO` (correo para derechos) en Render. `PRIVACIDAD_RETENCION` ya dice 3 años por defecto.
+- "Mis datos" (barra superior): cada persona descarga sus datos y todas sus acciones registradas (derecho de acceso). La descarga queda en la bitácora.
+- **Retención: 3 años.** `purgar.py` borra la bitácora anterior al corte y anonimiza nombres y usuarios en el historial (el estado de los buses se conserva). Es la única excepción a la regla de solo agregar: se corre a mano con `DATABASE_URL_ADMIN`, primero sin argumentos (simulación) y luego con `--ejecutar`, y deja en la bitácora un evento con el corte y las cantidades. Correrlo una vez al año (la primera vez con datos que purgar será en noviembre de 2029).

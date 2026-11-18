@@ -35,7 +35,7 @@ h1,h2,h3{margin:0;text-wrap:balance}
 .nav a{color:var(--fg);text-decoration:none;font-weight:600;font-size:.9rem;padding:6px 12px;border-radius:8px}
 .nav a[aria-current="page"]{background:var(--accent-bg);color:var(--accent)}
 .who{margin-left:auto;display:flex;gap:8px;align-items:center;font-size:.85rem;color:var(--muted)}
-.linkbtn{background:none;border:0;color:var(--accent);font:600 .85rem var(--f-display);cursor:pointer;padding:4px}
+.linkbtn{background:none;border:0;text-decoration:none;color:var(--accent);font:600 .85rem var(--f-display);cursor:pointer;padding:4px}
 
 .card{background:var(--surface);border:1px solid var(--line);border-radius:12px}
 .pad{padding:14px 16px}

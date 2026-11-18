@@ -34,6 +34,10 @@ def _limpiar_url(v):
 
 
 DATABASE_URL = _limpiar_url(os.environ.get("DATABASE_URL", "postgresql://localhost/flota"))
+# Mínimo privilegio: la app trabaja con el rol flota_app (DATABASE_URL) y solo el arranque usa el dueño de la base
+# (DATABASE_URL_ADMIN) para crear o actualizar tablas. Sin DATABASE_URL_ADMIN, todo usa DATABASE_URL como antes.
+DATABASE_URL_ADMIN = _limpiar_url(os.environ.get("DATABASE_URL_ADMIN", "")) or DATABASE_URL
+ROL_APP = "flota_app"
 ADMIN_USUARIO = os.environ.get("ADMIN_USUARIO", "admin")
 ADMIN_CLAVE = os.environ.get("ADMIN_CLAVE", "")
 
@@ -162,6 +166,17 @@ DROP TRIGGER IF EXISTS bitacora_sin_vaciar ON bitacora;
 CREATE TRIGGER bitacora_sin_vaciar BEFORE TRUNCATE ON bitacora FOR EACH STATEMENT EXECUTE FUNCTION solo_agregar();
 """
 
+# Permisos del rol de la app: sin DELETE en ninguna tabla, y en cambios y bitácora solo leer y agregar.
+# No es dueño de nada, así que tampoco puede borrar tablas ni los disparadores que protegen la bitácora.
+PERMISOS_APP = f"""
+GRANT USAGE ON SCHEMA public TO {ROL_APP};
+REVOKE ALL ON ALL TABLES IN SCHEMA public FROM {ROL_APP};
+GRANT SELECT, INSERT, UPDATE ON buses, reportes, base, usuarios, motivos TO {ROL_APP};
+GRANT SELECT, INSERT ON cambios, bitacora TO {ROL_APP};
+REVOKE ALL ON ALL SEQUENCES IN SCHEMA public FROM {ROL_APP};
+GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO {ROL_APP};
+"""
+
 # El historial de estados (cambios) queda igual de protegido, después de las migraciones antiguas.
 SCHEMA_PROTEGER_CAMBIOS = """
 DROP TRIGGER IF EXISTS cambios_solo_agregar ON cambios;
@@ -211,9 +226,9 @@ app.config.update(
 logging.basicConfig(level=logging.INFO)
 
 
-def conectar():
+def conectar(url=None):
     return psycopg.connect(
-        DATABASE_URL, row_factory=dict_row, autocommit=False,
+        url or DATABASE_URL, row_factory=dict_row, autocommit=False,
         connect_timeout=15, keepalives=1, keepalives_idle=30, keepalives_interval=10, keepalives_count=3,
     )
 
@@ -223,7 +238,21 @@ def ahora():
 
 
 def iniciar_bd():
+    try:
+        _iniciar_bd()
+    except psycopg.errors.InsufficientPrivilege:
+        # La app ya corre con el rol limitado y no hay DATABASE_URL_ADMIN: las tablas existen, se sigue sin tocarlas.
+        app.logger.warning("Esquema no actualizado: el rol de la app no puede crear tablas (falta DATABASE_URL_ADMIN)")
     with conectar() as cx:
+        r = cx.execute("SELECT current_user AS yo, pg_get_userbyid(relowner) AS dueno FROM pg_class "
+                       "WHERE relname = 'bitacora' AND relkind = 'r'").fetchone()
+    if r and r["yo"] == r["dueno"]:
+        app.logger.warning("La app usa el rol dueño de la base (%s): puede borrar la protección de la bitácora. "
+                           "Ver README, sección Mínimo privilegio.", r["yo"])
+
+
+def _iniciar_bd():
+    with conectar(DATABASE_URL_ADMIN) as cx:
         cx.execute(SCHEMA)
         cx.cursor().executemany(
             """INSERT INTO buses (placa, interno, tipo_bus, tipo_flota, marca_chasis, terminal_op, ini_terminal, ini_estado)
@@ -299,6 +328,9 @@ def iniciar_bd():
             )
             registrar(cx, "Usuario administrador inicial creado", "Sistema", objeto=ADMIN_USUARIO.lower())
             app.logger.info("Administrador inicial '%s' creado", ADMIN_USUARIO)
+        if cx.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (ROL_APP,)).fetchone():
+            cx.execute(PERMISOS_APP)
+            app.logger.info("Permisos del rol %s actualizados", ROL_APP)
 
 
 def parse_fecha(s, defecto=None):
@@ -483,7 +515,7 @@ def cabeceras_seguridad(resp):
     h["Cross-Origin-Opener-Policy"] = "same-origin"
     if request.is_secure or EN_RENDER:
         h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-    if request.path.startswith("/api/") or request.path in ("/", "/dashboard", "/admin", "/login"):
+    if request.path.startswith("/api/") or request.path in ("/", "/dashboard", "/admin", "/login", "/privacidad"):
         h["Cache-Control"] = "no-store"  # datos de la flota y del personal: que no queden en cachés
     return resp
 
@@ -557,6 +589,23 @@ def login_page():
     return send_from_directory(app.static_folder, "login.html")
 
 
+def _env_html(nombre, defecto):
+    v = os.environ.get(nombre, "").strip() or defecto
+    return v.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+
+
+@app.get("/privacidad")
+def privacidad_page():
+    """Aviso de privacidad (Ley 19.628 / Ley 21.719). Responsable, contacto y plazo vienen de variables de entorno."""
+    html = (Path(app.static_folder) / "privacidad.html").read_text(encoding="utf-8")
+    for k, d in (("PRIVACIDAD_RESPONSABLE", "la empresa que opera el depósito"),
+                 ("PRIVACIDAD_CONTACTO", "el administrador del sistema"),
+                 ("PRIVACIDAD_RETENCION", "3 años desde cada registro. Pasado ese plazo, el registro de acciones se borra y "
+                                          "en el historial de la flota tu nombre y usuario se reemplazan por \"anonimizado\"")):
+        html = html.replace("{{" + k + "}}", _env_html(k, d))
+    return Response(html, mimetype="text/html")
+
+
 @app.post("/api/login")
 def api_login():
     d = request.get_json(silent=True) or {}
@@ -627,6 +676,29 @@ def api_mi_clave():
         registrar(cx, "Cambió su propia contraseña", "Sesión", usuario_actual(), objeto=usuario_actual()["usuario"])
     session["hc"] = huella_clave(nuevo_hash)  # esta sesión sigue; las otras sesiones abiertas se cierran
     return jsonify(ok=True)
+
+
+@app.get("/api/mis-datos.csv")
+@requiere_login
+def api_mis_datos():
+    """Derecho de acceso: cada persona descarga sus datos de usuario y todas sus acciones registradas."""
+    u = usuario_actual()
+    with conectar() as cx:
+        p = cx.execute("SELECT usuario, nombre, rol, activo, creado FROM usuarios WHERE id=%s", (u["id"],)).fetchone()
+        acciones = cx.execute("SELECT * FROM bitacora WHERE usuario=%s ORDER BY ts, id", (u["usuario"],)).fetchall()
+        registrar(cx, "Descarga: mis datos personales", "Descarga", u, detalle=f"{len(acciones)} acciones")
+    buf = io.StringIO()
+    w = csv.writer(buf, delimiter=";")
+    w.writerow(["Usuario", "Nombre", "Rol", "Activo", "Creado"])
+    w.writerow([p["usuario"], p["nombre"], NOMBRE_ROL.get(p["rol"], p["rol"]), "Sí" if p["activo"] else "No",
+                p["creado"].astimezone(TZ).strftime("%d-%m-%Y %H:%M")])
+    w.writerow([])
+    w.writerow(COLUMNAS_BITACORA)
+    for f in acciones:
+        w.writerow(fila_bitacora(f))
+    # Sin ocultar(): son los propios datos de la persona, aunque sea invitado.
+    return Response("\ufeff" + buf.getvalue(), mimetype="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=mis_datos.csv"})
 
 
 # ---------- Reporte diario ----------

@@ -23,7 +23,7 @@ async function barra(actual) {
     <div class="brand"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><path d="M3 11h18M7 17v3M17 17v3"/><circle cx="7.5" cy="14" r=".8" fill="currentColor"/><circle cx="16.5" cy="14" r=".8" fill="currentColor"/></svg>Control de Flota</div>
     <nav class="nav">${links.map(([h, t]) => `<a href="${h}" ${h === actual ? 'aria-current="page"' : ""}>${t}</a>`).join("")}</nav>
     <div class="who"><span>${esc(yo.nombre)} · ${{admin: "Administrador", operador: "Operador", invitado: "Invitado"}[yo.rol] || yo.rol}</span>
-      <button class="linkbtn" id="b-clave" ${yo.rol === "invitado" ? "hidden" : ""}>Cambiar contraseña</button><button class="linkbtn" id="b-salir">Salir</button></div></div>
+      <button class="linkbtn" id="b-clave" ${yo.rol === "invitado" ? "hidden" : ""}>Cambiar contraseña</button><a class="linkbtn" href="/api/mis-datos.csv" title="Descarga tus datos y tus acciones registradas">Mis datos</a><a class="linkbtn" href="/privacidad">Privacidad</a><button class="linkbtn" id="b-salir">Salir</button></div></div>
   <dialog id="dlg-clave"><form method="dialog" id="f-clave" style="display:flex;flex-direction:column;gap:10px">
     <h3>Cambiar mi contraseña</h3>
     <label class="f">Contraseña actual<input type="password" id="c-act" required autocomplete="current-password"></label>
