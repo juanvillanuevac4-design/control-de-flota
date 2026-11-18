@@ -1,14 +1,19 @@
 """Control de Flota: un reporte diario de la distribución de buses del depósito."""
+import base64
 import csv
+import hashlib
 import io
 import json
 import logging
 import os
 import re
 import secrets
+import threading
 import time
 from datetime import date, datetime, timedelta
 from functools import wraps
+from pathlib import Path
+from urllib.parse import urlparse
 from zoneinfo import ZoneInfo
 
 import psycopg
@@ -16,6 +21,7 @@ from flask import Flask, Response, g, jsonify, redirect, request, send_from_dire
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill
 from psycopg.rows import dict_row
+from werkzeug.middleware.proxy_fix import ProxyFix
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from buses_iniciales import BUSES
@@ -189,12 +195,18 @@ def registrar_varias(cx, filas, u=None, ts=None):
     )
 
 app = Flask(__name__, static_folder="static")
+# Render pone un proxy delante: con esto request.remote_addr es la IP real del cliente y request.is_secure ve el HTTPS.
+app.wsgi_app = ProxyFix(app.wsgi_app, x_for=1, x_proto=1)
 app.secret_key = os.environ.get("SECRET_KEY") or secrets.token_hex(32)
+EN_RENDER = os.environ.get("RENDER") is not None
 app.config.update(
     SESSION_COOKIE_HTTPONLY=True,
     SESSION_COOKIE_SAMESITE="Lax",
-    SESSION_COOKIE_SECURE=os.environ.get("RENDER") is not None,
-    PERMANENT_SESSION_LIFETIME=timedelta(days=7),
+    SESSION_COOKIE_SECURE=EN_RENDER,
+    SESSION_COOKIE_NAME="__Host-sesion" if EN_RENDER else "sesion",
+    # La sesión dura un turno (12 horas por defecto); después hay que volver a ingresar.
+    PERMANENT_SESSION_LIFETIME=timedelta(hours=int(os.environ.get("SESION_HORAS", "12"))),
+    MAX_CONTENT_LENGTH=2 * 1024 * 1024,  # ningún envío legítimo pesa más de unos 100 KB
 )
 logging.basicConfig(level=logging.INFO)
 
@@ -343,15 +355,25 @@ def es_invitado():
 
 def mapa_ficticio():
     """Interno y placa reales -> ficticios, para que el perfil invitado (demo pública) no vea la flota real.
-    Se asignan por orden de interno, así que el orden y los grupos se mantienen; el mapeo es el mismo en toda la app."""
+    Se asignan por orden de interno, así que el orden y los grupos se mantienen; el mapeo es el mismo en toda la app.
+    También los nombres y usuarios del personal (datos personales, Ley 19.628) pasan a "Usuario N"."""
     if "mapa_ficticio" not in g:
         with conectar() as cx:
             buses = cx.execute(f"SELECT interno, placa FROM buses ORDER BY {ORDEN_INTERNO}").fetchall()
+            personas = cx.execute("SELECT id, usuario, nombre FROM usuarios ORDER BY id").fetchall()
         m = {}
         for i, b in enumerate(buses):
             m[b["interno"]] = str(1001 + i)
             m[b["placa"]] = f"DM{i + 1:04d}"
-        patron = re.compile(r"(?<![0-9A-Za-z])(" + "|".join(sorted(map(re.escape, m), key=len, reverse=True)) + r")(?![0-9A-Za-z])") if m else None
+        yo = (usuario_actual() or {}).get("id")
+        reservadas = {x.lower() for x in TERMINALES + ESTADOS + list(NOMBRE_ROL.values()) + ["Sistema", "Otro"]}
+        for p in personas:
+            if p["id"] == yo:
+                continue
+            for real, falso in ((p["nombre"], f"Usuario {p['id']}"), (p["usuario"], f"usuario{p['id']}")):
+                if real and len(real) >= 3 and real.lower() not in reservadas and real not in m:
+                    m[real] = falso
+        patron = re.compile(r"(?<!\w)(" + "|".join(sorted(map(re.escape, m), key=len, reverse=True)) + r")(?!\w)") if m else None
         g.mapa_ficticio = (m, patron)
     return g.mapa_ficticio
 
@@ -403,19 +425,107 @@ def verificar_sesion_vigente():
     if session.get("verificado", 0) > time.time() - 60:
         return
     with conectar() as cx:
-        r = cx.execute("SELECT id, usuario, nombre, rol, activo FROM usuarios WHERE id=%s", (u["id"],)).fetchone()
-    if not r or not r["activo"]:
+        r = cx.execute("SELECT id, usuario, nombre, rol, activo, clave_hash FROM usuarios WHERE id=%s", (u["id"],)).fetchone()
+    # Si la contraseña cambió, las sesiones abiertas con la contraseña anterior se cierran.
+    if not r or not r["activo"] or session.get("hc") != huella_clave(r["clave_hash"]):
         session.clear()
         return
     session["u"] = {"id": r["id"], "usuario": r["usuario"], "nombre": r["nombre"], "rol": r["rol"]}
     session["verificado"] = time.time()
 
 
+def huella_clave(clave_hash):
+    """Huella corta de la contraseña guardada: cambia cuando cambia la contraseña, sin exponer el hash."""
+    return hashlib.sha256((app.secret_key + clave_hash).encode()).hexdigest()[:16]
+
+
 @app.before_request
 def solo_json_en_post():
-    # Protección CSRF: los formularios de otros sitios no pueden enviar JSON con cookies.
-    if request.method == "POST" and request.path.startswith("/api/") and not request.is_json:
-        return jsonify(error="Solicitud no válida."), 400
+    # Protección CSRF: los formularios de otros sitios no pueden enviar JSON con cookies,
+    # y además se rechaza cualquier POST que el navegador marque como venido de otro sitio.
+    if request.method == "POST" and request.path.startswith("/api/"):
+        if not request.is_json:
+            return jsonify(error="Solicitud no válida."), 400
+        origen = request.headers.get("Origin")
+        if origen and urlparse(origen).netloc != request.host:
+            return jsonify(error="Solicitud no válida."), 403
+
+
+@app.before_request
+def sin_html_directo():
+    """Las pantallas solo se sirven por sus rutas (que exigen sesión), no como /static/archivo.html."""
+    if request.path.startswith("/static/") and request.path.endswith(".html"):
+        return jsonify(error="No encontrado."), 404
+
+
+def _hashes_csp():
+    """Hash de cada <script> en línea de las pantallas: solo esos scripts pueden ejecutarse (CSP)."""
+    hs = set()
+    for html in Path(app.static_folder).glob("*.html"):
+        for js in re.findall(r"<script>(.*?)</script>", html.read_text(encoding="utf-8"), re.S):
+            hs.add("'sha256-" + base64.b64encode(hashlib.sha256(js.encode()).digest()).decode() + "'")
+    return " ".join(sorted(hs))
+
+
+CSP = ("default-src 'self'; script-src 'self' " + _hashes_csp() + "; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; "
+       "img-src 'self' data:; connect-src 'self'; font-src 'self' https://fonts.gstatic.com; object-src 'none'; base-uri 'none'; "
+       "form-action 'self'; frame-ancestors 'none'")
+
+
+@app.after_request
+def cabeceras_seguridad(resp):
+    h = resp.headers
+    h["Content-Security-Policy"] = CSP
+    h["X-Content-Type-Options"] = "nosniff"
+    h["X-Frame-Options"] = "DENY"
+    h["Referrer-Policy"] = "same-origin"
+    h["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
+    h["Cross-Origin-Opener-Policy"] = "same-origin"
+    if request.is_secure or EN_RENDER:
+        h["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    if request.path.startswith("/api/") or request.path in ("/", "/dashboard", "/admin", "/login"):
+        h["Cache-Control"] = "no-store"  # datos de la flota y del personal: que no queden en cachés
+    return resp
+
+
+# ---------- Límite de intentos de ingreso ----------
+# En memoria: sirve porque la app corre con un solo proceso (gunicorn -w 1). Se reinicia con cada despliegue.
+VENTANA_INTENTOS = 15 * 60
+MAX_FALLOS_USUARIO = 5   # por usuario en 15 minutos
+MAX_FALLOS_IP = 20       # por IP en 15 minutos (muchos usuarios distintos desde el mismo lugar)
+_fallos = {}
+_fallos_lock = threading.Lock()
+# Hash de relleno: un usuario que no existe tarda lo mismo que una contraseña incorrecta.
+_HASH_RELLENO = generate_password_hash(secrets.token_hex(16))
+
+
+def _fallos_recientes(clave, t):
+    lst = [x for x in _fallos.get(clave, []) if x > t - VENTANA_INTENTOS]
+    if lst:
+        _fallos[clave] = lst
+    else:
+        _fallos.pop(clave, None)
+    return lst
+
+
+def ingreso_bloqueado(usuario, ip):
+    t = time.time()
+    with _fallos_lock:
+        return (len(_fallos_recientes("u:" + usuario, t)) >= MAX_FALLOS_USUARIO
+                or len(_fallos_recientes("ip:" + ip, t)) >= MAX_FALLOS_IP)
+
+
+def anotar_fallo(usuario, ip):
+    """Anota un ingreso fallido; devuelve True cuando ese fallo bloquea al usuario."""
+    t = time.time()
+    with _fallos_lock:
+        if len(_fallos) > 10000:  # tope de memoria ante un ataque con muchos usuarios inventados
+            for k in list(_fallos):
+                _fallos_recientes(k, t)
+        _fallos.setdefault("ip:" + ip, []).append(t)
+        lst = _fallos.setdefault("u:" + usuario, [])
+        lst.append(t)
+        return len(_fallos_recientes("u:" + usuario, t)) == MAX_FALLOS_USUARIO
 
 
 def pagina(nombre, admin=False):
@@ -452,17 +562,31 @@ def api_login():
     d = request.get_json(silent=True) or {}
     usuario = (d.get("usuario") or "").strip().lower()
     clave = d.get("clave") or ""
+    if not isinstance(clave, str) or len(usuario) > 80 or len(clave) > 200:
+        return jsonify(error="Usuario o contraseña incorrectos."), 401
+    ip = request.remote_addr or "?"
+    if ingreso_bloqueado(usuario, ip):
+        return jsonify(error="Demasiados intentos fallidos. Espera 15 minutos antes de volver a intentar."), 429
     with conectar() as cx:
         r = cx.execute("SELECT * FROM usuarios WHERE lower(usuario)=%s AND activo", (usuario,)).fetchone()
-    if not r or not check_password_hash(r["clave_hash"], clave):
+    if not check_password_hash(r["clave_hash"] if r else _HASH_RELLENO, clave) or not r:
+        bloquea = anotar_fallo(usuario, ip)
         if r:
             with conectar() as cx:
                 registrar(cx, "Ingreso fallido (contraseña incorrecta)", "Sesión", r)
-        time.sleep(0.7)
+                if bloquea:
+                    registrar(cx, "Usuario bloqueado 15 minutos por intentos fallidos", "Sesión", r,
+                              detalle=f"{MAX_FALLOS_USUARIO} intentos fallidos seguidos")
+        else:
+            app.logger.warning("Ingreso fallido con un usuario que no existe (%s caracteres)", len(usuario))
+        time.sleep(0.5)
         return jsonify(error="Usuario o contraseña incorrectos."), 401
+    with _fallos_lock:
+        _fallos.pop("u:" + usuario, None)
     session.clear()
     session.permanent = True
     session["u"] = {"id": r["id"], "usuario": r["usuario"], "nombre": r["nombre"], "rol": r["rol"]}
+    session["hc"] = huella_clave(r["clave_hash"])
     session["verificado"] = time.time()
     with conectar() as cx:
         registrar(cx, "Ingreso", "Sesión", r)
@@ -496,9 +620,12 @@ def api_mi_clave():
         r = cx.execute("SELECT clave_hash FROM usuarios WHERE id=%s", (usuario_actual()["id"],)).fetchone()
         if not check_password_hash(r["clave_hash"], actual):
             return jsonify(error="La contraseña actual no es correcta."), 400
-        cx.execute("UPDATE usuarios SET clave_hash=%s WHERE id=%s",
-                   (generate_password_hash(nueva), usuario_actual()["id"]))
+        if nueva == actual:
+            return jsonify(error="La nueva contraseña debe ser distinta de la actual."), 400
+        nuevo_hash = generate_password_hash(nueva)
+        cx.execute("UPDATE usuarios SET clave_hash=%s WHERE id=%s", (nuevo_hash, usuario_actual()["id"]))
         registrar(cx, "Cambió su propia contraseña", "Sesión", usuario_actual(), objeto=usuario_actual()["usuario"])
+    session["hc"] = huella_clave(nuevo_hash)  # esta sesión sigue; las otras sesiones abiertas se cierran
     return jsonify(ok=True)
 
 
@@ -768,7 +895,7 @@ def consulta_bitacora(cx, limite=None):
     hasta = parse_fecha(a.get("hasta"), date(2999, 12, 31))
     cond, par = ["(ts AT TIME ZONE %s)::date BETWEEN %s AND %s"], [str(TZ), desde, hasta]
     if a.get("usuario"):
-        cond.append("usuario = %s"); par.append(a["usuario"])
+        cond.append("usuario = %s"); par.append(interno_real(a["usuario"]))
     if a.get("interno"):
         cond.append("interno = %s"); par.append(interno_real(a["interno"].strip().upper()))
     tipo = {"buses": "(accion IN ('Cambio de bus','Reporte del día creado','Cambio de encargado del reporte') OR accion LIKE 'Corrección%%')",
@@ -961,7 +1088,10 @@ def api_admin_editar_usuario(uid):
             filas.append(dict(accion="Usuario activado" if activo else "Usuario desactivado", campo="Estado",
                               antes="Activo" if u["activo"] else "Inactivo", despues="Activo" if activo else "Inactivo"))
         if d.get("clave"):
-            cx.execute("UPDATE usuarios SET clave_hash=%s WHERE id=%s", (generate_password_hash(d["clave"]), uid))
+            nuevo_hash = generate_password_hash(d["clave"])
+            cx.execute("UPDATE usuarios SET clave_hash=%s WHERE id=%s", (nuevo_hash, uid))
+            if uid == usuario_actual()["id"]:
+                session["hc"] = huella_clave(nuevo_hash)
             filas.append(dict(accion="Contraseña cambiada por un administrador", campo="Contraseña"))
         registrar_varias(cx, [dict(f, origen="Administración", objeto=u["usuario"]) for f in filas], usuario_actual())
     return jsonify(ok=True)
@@ -1039,7 +1169,7 @@ def error(e):
     if isinstance(e, HTTPException):
         return jsonify(error=e.description), e.code
     app.logger.exception("Error en %s", request.path)
-    return jsonify(error="Error del servidor: " + type(e).__name__), 500
+    return jsonify(error="Error del servidor. Intenta de nuevo; si sigue, avisa al administrador."), 500
 
 
 @app.get("/healthz")

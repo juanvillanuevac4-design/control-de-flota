@@ -34,3 +34,13 @@ Registro diario de la distribución de la flota del depósito, basado en `Distru
 pip install -r requirements.txt
 DATABASE_URL=postgresql://... ADMIN_CLAVE=algo-seguro gunicorn -w 1 --threads 4 app:app
 ```
+
+## Seguridad
+
+- Contraseñas con hash (scrypt de Werkzeug). Ingreso: máximo 5 intentos fallidos por usuario y 20 por IP cada 15 minutos (luego 15 minutos de bloqueo, queda en la bitácora). El límite vive en memoria: vale porque la app corre con un proceso (`-w 1`) y se reinicia con cada despliegue.
+- Sesión de 12 horas (`SESION_HORAS`), cookie `__Host-` segura, HttpOnly y SameSite=Lax. Cambiar una contraseña cierra las demás sesiones de ese usuario en menos de un minuto.
+- Permisos por rol revisados en el servidor en cada ruta (`requiere_login`, `requiere_admin`, `requiere_escritura`, `sin_listado_para_invitado`).
+- CSRF: los POST de la API solo aceptan JSON y se rechazan si el navegador indica otro origen.
+- Cabeceras: CSP (solo los scripts propios, por hash), HSTS, X-Frame-Options DENY, nosniff, Referrer-Policy, `Cache-Control: no-store` en datos.
+- Todas las consultas SQL van parametrizadas. Los errores no muestran detalles internos. Envíos de más de 2 MB se rechazan.
+- Perfil invitado: internos, placas y nombres del personal ficticios en todas las respuestas (datos personales, Ley 19.628).
