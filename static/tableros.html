@@ -66,7 +66,7 @@ td.mono{white-space:nowrap}
   <!-- 1 · Evolución por estatus -->
   <section class="card pad">
     <h2>Evolución por estatus</h2>
-    <p class="note" id="n-evo">Buses operativos y en mantenimiento al cierre de cada día. En semana y mes es el promedio diario del período.</p>
+    <p class="note" id="n-evo">Buses operativos, en carga y en mantenimiento al cierre de cada día. En semana y mes es el promedio diario del período.</p>
     <div class="grid2">
       <div class="chart"><canvas id="c-evo"></canvas></div>
       <div class="chart"><canvas id="c-disp"></canvas></div>
@@ -82,7 +82,7 @@ td.mono{white-space:nowrap}
   <!-- 2 · Disponibilidad por hora -->
   <section class="card pad">
     <h2>Disponibilidad por hora</h2>
-    <p class="note" id="n-hora">Porcentaje de la flota operativa al final de cada hora, según el historial de cambios.</p>
+    <p class="note" id="n-hora">Porcentaje de la flota operativa al final de cada hora, según el historial de cambios. Los buses en carga no cuentan como disponibles.</p>
     <div class="chart"><canvas id="c-hora"></canvas></div>
     <h3 style="font-size:.9rem;margin:14px 0 6px">Mapa de calor: día por hora</h3>
     <div class="scroll" style="max-height:520px" id="heat"></div>
@@ -182,8 +182,10 @@ async function cargar() {
 
 function pintar() {
   const E = T.evolucion;
-  const op = E.reduce((a, p) => a + p.op * p.dias, 0), tot = E.reduce((a, p) => a + (p.op + p.mt) * p.dias, 0);
+  const op = E.reduce((a, p) => a + p.op * p.dias, 0), tot = E.reduce((a, p) => a + (p.op + (p.ca || 0) + p.mt) * p.dias, 0);
+  const ca = E.reduce((a, p) => a + (p.ca || 0) * p.dias, 0), nd = E.reduce((a, p) => a + p.dias, 0);
   $("kpis").innerHTML = kpi("Disponibilidad promedio", tot ? num(op / tot * 100) + "%" : "–", tot ? brecha(op / tot * 100) + ` · meta ${num(T.meta)}%` : "") +
+    kpi("En carga (promedio diario)", nd ? num(ca / nd) : "–", "buses cargando; no cuentan como disponibles") +
     kpi("Ingresos a mantenimiento", T.reiterativos.ingresos, `${T.reiterativos.buses_con_ingreso} buses distintos`) +
     kpi("Tiempo fuera de servicio", dias(T.tiempos.mediana_h), `mediana de ${T.tiempos.reparados} reparaciones`) +
     kpi(`Reincidencia ≤ ${T.dias_reincidencia} días`, T.reincidencia.tasa === null ? "–" : num(T.reincidencia.tasa) + "%", `${T.reincidencia.total} de ${T.reiterativos.ingresos} ingresos`) +
@@ -193,9 +195,9 @@ function pintar() {
 
 function evolucion() {
   const E = T.evolucion, L = E.map(p => p.etiqueta), unidad = grano === "dia" ? "Buses" : "Buses (promedio diario)";
-  $("n-evo").textContent = grano === "dia" ? "Buses operativos y en mantenimiento al cierre de cada día." : `Promedio diario de buses por ${grano}. Pasa el cursor para ver cuántos días con reporte tiene cada período.`;
+  $("n-evo").textContent = grano === "dia" ? "Buses operativos, en carga y en mantenimiento al cierre de cada día. En carga no cuenta como disponible." : `Promedio diario de buses por ${grano}. Pasa el cursor para ver cuántos días con reporte tiene cada período.`;
   const tip = {callbacks: {footer: it => { const p = E[it[0].dataIndex]; return grano === "dia" ? "" : `${p.dias} días con reporte (${fmtFecha(p.desde)} a ${fmtFecha(p.hasta)})`; }}};
-  grafico("c-evo", {type: "bar", data: {labels: L, datasets: [barra_("Operativo", E.map(p => p.op), css("--ok")), barra_("Mantenimiento", E.map(p => p.mt), css("--mt"))]},
+  grafico("c-evo", {type: "bar", data: {labels: L, datasets: [barra_("Operativo", E.map(p => p.op), css("--ok")), barra_("En carga", E.map(p => p.ca || 0), css("--warn")), barra_("Mantenimiento", E.map(p => p.mt), css("--mt"))]},
     options: {scales: {x: {stacked: true, grid: {display: false}}, y: {stacked: true, beginAtZero: true, title: {display: true, text: unidad}}}, plugins: {tooltip: tip, title: {display: true, text: "Buses por estatus", align: "start"}}}});
   grafico("c-disp", {type: "line", data: {labels: L, datasets: [linea("Disponibilidad", E.map(p => p.disp), css("--accent"), {fill: false}), lineaMeta(L.length)]},
     options: {scales: {x: {grid: {display: false}}, y: {suggestedMin: piso([...E.map(p => p.disp), T.meta]), max: 100, ticks: {callback: v => v + "%"}}}, plugins: {legend: {display: true, position: "bottom"}, tooltip: {callbacks: {label: c => ` ${c.dataset.label.startsWith("Meta") ? "Meta" : "Disponibilidad"} ${num(c.raw)}%`}}, title: {display: true, text: "% de la flota operativa", align: "start"}}}});

@@ -37,7 +37,9 @@
 .chip{font:600 clamp(.8rem,.95vw,1.08rem) var(--f-mono);border-radius:7px;padding:clamp(5px,.55vw,11px) 0;text-align:center;cursor:grab;border:1px solid transparent;touch-action:manipulation;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
 .chip.ok{background:var(--ok-bg);color:var(--ok)}
 .chip.mt{background:var(--mt-bg);color:var(--mt)}
+.chip.ca{background:var(--warn-bg);color:var(--warn)}
 .chip.ch{border-color:var(--warn)}
+.chip.ca.ch{border-color:var(--fg)}
 .chip.pend{border-style:dashed;border-color:var(--accent)}
 .chip.obs::after{content:"•";margin-left:3px}
 .chip.arrastrando{opacity:.35}
@@ -45,6 +47,11 @@
 @media (max-width:700px){#vC{flex-direction:column}.col{flex:none !important;min-height:0;min-width:0}}
 #dlg form{display:flex;flex-direction:column;gap:10px;min-width:min(320px,calc(100vw - 72px))}
 #dlg .hist{font-size:.8rem;color:var(--muted);margin:0}
+#sel form{display:flex;flex-direction:column;gap:8px;min-width:min(280px,calc(100vw - 72px))}
+#sel .est{font:700 1rem var(--f-display);padding:12px;border-radius:9px;border:2px solid transparent;cursor:pointer;text-align:left}
+#sel .est.ok{background:var(--ok-bg);color:var(--ok)} #sel .est.ca{background:var(--warn-bg);color:var(--warn)} #sel .est.mt{background:var(--mt-bg);color:var(--mt)}
+#sel .est.actual{border-color:currentColor} #sel .est.actual::after{content:" (actual)";font-weight:500}
+.pill.p-ca{background:var(--warn-bg);color:var(--warn)} .pill.p-ca i{background:var(--warn)}
 </style>
 </head>
 <body>
@@ -62,11 +69,11 @@
   </section>
 
   <section class="card pad tools">
-    <p class="note" id="desc" style="margin:0;flex:1 1 300px">Arrastra un bus a otra terminal para moverlo. Doble click cambia Operativo / Mantenimiento. Un click abre el detalle (motivo y observación). En celular: mantén presionado y arrastra. Cada cambio se guarda solo. Borde amarillo: cambió hoy; punto: tiene observación.</p>
+    <p class="note" id="desc" style="margin:0;flex:1 1 300px">Arrastra un bus a otra terminal para moverlo. Un click (o un toque) abre el selector de estado: Operativo, En carga o Mantenimiento. Desde ahí, «Más detalle» permite cambiar terminal, motivo y observación. En celular: mantén presionado y arrastra. Cada cambio se guarda solo. Borde amarillo (oscuro en los buses en carga): cambió hoy; punto: tiene observación.</p>
     <div class="row">
       <input type="search" id="buscar" placeholder="Buscar interno o placa" aria-label="Buscar">
       <select id="f-tipo" aria-label="Tipo de bus"><option value="">Todos los tipos</option></select>
-      <select id="f-estado" aria-label="Estado"><option value="">Todos los estados</option><option>Operativo</option><option>Mantenimiento</option></select>
+      <select id="f-estado" aria-label="Estado"><option value="">Todos los estados</option><option>Operativo</option><option>En carga</option><option>Mantenimiento</option></select>
     </div>
   </section>
 
@@ -88,6 +95,12 @@
   <div class="row"><button class="btn" value="ok">Aplicar y guardar</button><button class="btn sec" value="cancel" formnovalidate>Cancelar</button></div>
 </form></dialog>
 
+<dialog id="sel"><form method="dialog">
+  <h3 id="s-t"></h3><p class="note">Elige el estado del bus. Se guarda al tiro.</p>
+  <div id="s-op" style="display:flex;flex-direction:column;gap:8px"></div>
+  <div class="row"><button class="btn sec" value="detalle">Más detalle</button><button class="btn sec" value="cancel" formnovalidate>Cancelar</button></div>
+</form></dialog>
+
 <script src="/static/comun.js"></script>
 <script>
 let yo, datos, filas = [], guardado = {}, tGuardar, guardando = false, encargadoGuardado = "";
@@ -97,6 +110,7 @@ const llave = f => CAMPOS.map(c => f[c] || "").join("|");
 const opts = (lista, v) => lista.map(o => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("");
 const pendientes = () => filas.filter(f => guardado[f.interno] !== llave(f));
 const invitado = () => yo && yo.rol === "invitado";
+const CLASE = {"Operativo": "ok", "En carga": "ca", "Mantenimiento": "mt"};
 
 function aviso(texto, clase) { const e = $("estado"); e.hidden = false; e.className = "msg " + clase; e.textContent = texto; }
 
@@ -133,8 +147,8 @@ function visibles() {
 }
 
 function resumen() {
-  const op = filas.filter(f => f.operativo === "Operativo").length, mt = filas.length - op;
-  $("sum").innerHTML = `<span class="pill p-info">${filas.length} buses</span><span class="pill p-ok"><i></i>${op} operativos</span><span class="pill p-mt"><i></i>${mt} en mantenimiento</span>`;
+  const n_ = e => filas.filter(f => f.operativo === e).length, op = n_("Operativo"), ca = n_("En carga"), mt = n_("Mantenimiento");
+  $("sum").innerHTML = `<span class="pill p-info">${filas.length} buses</span><span class="pill p-ok"><i></i>${op} operativos</span><span class="pill p-ca"><i></i>${ca} en carga</span><span class="pill p-mt"><i></i>${mt} en mantenimiento</span>`;
   const n = pendientes().length, g = $("guardado");
   if (guardando) { g.className = "note pend"; g.textContent = "Guardando…"; }
   else if (n) { g.className = "note pend"; g.textContent = `${n} cambio${n > 1 ? "s" : ""} por guardar`; }
@@ -146,13 +160,13 @@ function resumen() {
 function pintar() {
   const vs = visibles(), pend = new Set(pendientes().map(f => f.interno));
   $("vC").innerHTML = datos.terminales.map(t => {
-    const g = vs.filter(f => f.terminal_real === t), op = g.filter(f => f.operativo === "Operativo").length;
-    return `<section class="col" data-t="${esc(t)}" style="flex-grow:${Math.max(g.length, 8)}"><h3>${esc(t)} <small>${op}/${g.length} operativos</small></h3>
+    const g = vs.filter(f => f.terminal_real === t), op = g.filter(f => f.operativo === "Operativo").length, ca = g.filter(f => f.operativo === "En carga").length;
+    return `<section class="col" data-t="${esc(t)}" style="flex-grow:${Math.max(g.length, 8)}"><h3>${esc(t)} <small>${op}/${g.length} operativos${ca ? ` · ${ca} en carga` : ""}</small></h3>
       <div class="bar"><i style="width:${g.length ? op / g.length * 100 : 0}%"></i></div>
       <div class="chips">${g.map(f => {
         const tip = [f.placa, f.tipo_bus, f.operativo === "Mantenimiento" && f.motivo ? "Motivo: " + f.motivo : "", f.observacion,
           f.cambio_ts && f.cambio_ts !== "local" ? `Cambió ${f.cambio_ts} (${f.cambio_por})` : ""].filter(Boolean).join(" · ");
-        return `<button type="button" class="chip ${f.operativo === "Operativo" ? "ok" : "mt"} ${f.cambio_ts ? "ch" : ""} ${pend.has(f.interno) ? "pend" : ""} ${f.observacion ? "obs" : ""}" data-i="${esc(f.interno)}" title="${esc(tip)}">${esc(f.interno)}</button>`;
+        return `<button type="button" class="chip ${CLASE[f.operativo] || "mt"} ${f.cambio_ts ? "ch" : ""} ${pend.has(f.interno) ? "pend" : ""} ${f.observacion ? "obs" : ""}" data-i="${esc(f.interno)}" title="${esc(tip)}">${esc(f.interno)}</button>`;
       }).join("") || '<span class="note">Sin buses</span>'}</div></section>`;
   }).join("");
   resumen();
@@ -202,8 +216,25 @@ async function guardar(forzar) {
 $("enviar").onclick = () => { $("guardado").textContent = ""; guardar(true); };
 $("encargado").addEventListener("change", () => datos.existe && guardar());
 
-// ---- Detalle (un click) y cambio de estado (doble click)
-let editando, tClick, arrastre = null, sinClick = false;
+// ---- Selector de estado (un click) y detalle completo ("Más detalle")
+let editando, arrastre = null, sinClick = false, eligiendo;
+function abrirSelector(interno) {
+  eligiendo = filas.find(f => f.interno === interno);
+  $("s-t").textContent = "Bus " + eligiendo.interno;
+  $("s-op").innerHTML = datos.estados.map(e =>
+    `<button class="est ${CLASE[e] || ""} ${e === eligiendo.operativo ? "actual" : ""}" value="e:${esc(e)}">${esc(e)}</button>`).join("");
+  $("sel").showModal();
+}
+$("sel").addEventListener("close", () => {
+  const v = $("sel").returnValue, f = eligiendo;
+  if (!f || !v || v === "cancel") return;
+  if (v === "detalle") return abrirDetalle(f.interno);
+  const e = v.slice(2);
+  if (e === "Mantenimiento") {   // pide el motivo en la ventana de detalle
+    abrirDetalle(f.interno); $("d-est").value = e; $("l-mot").hidden = false; return;
+  }
+  if (e !== f.operativo) cambiar(f.interno, {operativo: e}, "selector");
+});
 function abrirDetalle(interno) {
   editando = filas.find(f => f.interno === interno);
   $("d-t").textContent = "Bus " + editando.interno;
@@ -227,16 +258,7 @@ $("vC").addEventListener("click", e => {
   const b = e.target.closest(".chip");
   if (!b) return;
   if (sinClick) { sinClick = false; return; }
-  clearTimeout(tClick);
-  if (e.detail > 1) return;
-  tClick = setTimeout(() => abrirDetalle(b.dataset.i), 260);
-});
-$("vC").addEventListener("dblclick", e => {
-  const b = e.target.closest(".chip");
-  if (!b) return;
-  clearTimeout(tClick);
-  const f = filas.find(x => x.interno === b.dataset.i);
-  cambiar(f.interno, {operativo: f.operativo === "Operativo" ? "Mantenimiento" : "Operativo"}, "doble_click");
+  abrirSelector(b.dataset.i);
 });
 
 // ---- Arrastrar: con mouse al mover; en pantalla táctil, manteniendo presionado medio segundo.
@@ -249,7 +271,6 @@ $("vC").addEventListener("pointerdown", e => {
 function iniciarArrastre(x, y) {
   if (!arrastre) return;
   arrastre.activo = true;
-  clearTimeout(tClick);
   const g = arrastre.b.cloneNode(true);
   g.classList.add("fantasma"); g.style.left = x + "px"; g.style.top = y + "px";
   document.body.appendChild(g); arrastre.g = g;
@@ -296,7 +317,7 @@ window.addEventListener("beforeunload", e => { if (!invitado() && (pendientes().
 
 // Trae los cambios de otros usuarios cada minuto, si no hay nada pendiente ni abierto.
 setInterval(() => {
-  if (!datos || invitado() || guardando || arrastre || $("dlg").open || pendientes().length || document.hidden) return;
+  if (!datos || invitado() || guardando || arrastre || $("dlg").open || $("sel").open || pendientes().length || document.hidden) return;
   cargar(datos.fecha).catch(() => {});
 }, 60000);
 

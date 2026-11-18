@@ -42,7 +42,10 @@ ADMIN_USUARIO = os.environ.get("ADMIN_USUARIO", "admin")
 ADMIN_CLAVE = os.environ.get("ADMIN_CLAVE", "")
 
 TERMINALES = ["Pie Andino", "Aguirre Luco", "Juanita", "Otro"]  # columna J "Terminal Real"
-ESTADOS = ["Operativo", "Mantenimiento"]  # columna K "Operativo"
+ESTADOS = ["Operativo", "En carga", "Mantenimiento"]  # columna K "Operativo"
+# Estados que cuentan como flota disponible en dashboard y tableros. Decisión de Juan (2026-11-18):
+# "En carga" (bus cargando batería) NO cuenta como disponible, aunque tampoco es mantenimiento.
+DISPONIBLES = {"Operativo"}
 # Columnas de la hoja "Base"
 COLUMNAS_BASE = ["Fecha", "Hora", "Encargado", "PLACA", "INTERNO", "TIPO BUS", "TIPO FLOTA", "MARCA CHASIS",
                  "TERMINAL OP", "Terminal Real", "Operativo", "Motivo mantenimiento", "Observacion",
@@ -92,7 +95,7 @@ CREATE TABLE IF NOT EXISTS base (
     marca_chasis TEXT NOT NULL,
     terminal_op TEXT NOT NULL,
     terminal_real TEXT NOT NULL CHECK (terminal_real IN ('Pie Andino','Aguirre Luco','Juanita','Otro')),
-    operativo TEXT NOT NULL CHECK (operativo IN ('Operativo','Mantenimiento')),
+    operativo TEXT NOT NULL CHECK (operativo IN ('Operativo','En carga','Mantenimiento')),
     observacion TEXT NOT NULL DEFAULT '',
     UNIQUE (fecha, interno)
 );
@@ -109,6 +112,8 @@ CREATE TABLE IF NOT EXISTS usuarios (
 ALTER TABLE usuarios DROP CONSTRAINT IF EXISTS usuarios_rol_check;
 ALTER TABLE usuarios ADD CONSTRAINT usuarios_rol_check CHECK (rol IN ('admin','operador','invitado'));
 ALTER TABLE base ADD COLUMN IF NOT EXISTS motivo TEXT NOT NULL DEFAULT '';
+ALTER TABLE base DROP CONSTRAINT IF EXISTS base_operativo_check;
+ALTER TABLE base ADD CONSTRAINT base_operativo_check CHECK (operativo IN ('Operativo','En carga','Mantenimiento'));
 ALTER TABLE base ADD COLUMN IF NOT EXISTS cambio_ts TIMESTAMPTZ;
 ALTER TABLE base ADD COLUMN IF NOT EXISTS cambio_por TEXT NOT NULL DEFAULT '';
 -- Motivos de mantenimiento (lista desplegable con mantenedor)
@@ -209,7 +214,7 @@ CREATE TRIGGER cambios_sin_vaciar BEFORE TRUNCATE ON cambios FOR EACH STATEMENT 
 
 NOMBRE_CAMPO = {"terminal_real": "Terminal Real", "operativo": "Estado", "motivo": "Motivo mantenimiento",
                 "observacion": "Observación"}
-ORIGENES = {"arrastre": "Arrastre entre terminales", "doble_click": "Doble click", "detalle": "Ventana del bus",
+ORIGENES = {"arrastre": "Arrastre entre terminales", "doble_click": "Doble click", "selector": "Selector de estado", "detalle": "Ventana del bus",
             "pantalla": "Reporte diario"}
 NOMBRE_ROL = {"admin": "Administrador", "operador": "Operador", "invitado": "Invitado"}
 SISTEMA = {"usuario": "sistema", "nombre": "Sistema", "rol": "sistema"}
@@ -891,9 +896,9 @@ def api_guardar_reporte():
 def api_lista_reportes():
     with conectar() as cx:
         rs = cx.execute(
-            """SELECT r.fecha, r.hora, r.encargado, count(*) FILTER (WHERE b.operativo='Operativo') AS op, count(b.id) AS total
-               FROM reportes r LEFT JOIN base b ON b.reporte_id=r.id GROUP BY r.id ORDER BY r.fecha DESC LIMIT 60"""
-        ).fetchall()
+            """SELECT r.fecha, r.hora, r.encargado, count(*) FILTER (WHERE b.operativo = ANY(%s)) AS op, count(b.id) AS total
+               FROM reportes r LEFT JOIN base b ON b.reporte_id=r.id GROUP BY r.id ORDER BY r.fecha DESC LIMIT 60""",
+            (sorted(DISPONIBLES),)).fetchall()
     return jsonify([{"fecha": r["fecha"].isoformat(), "hora": r["hora"].strftime("%H:%M"),
                      "encargado": r["encargado"], "operativos": r["op"], "total": r["total"]} for r in rs])
 
@@ -912,6 +917,7 @@ def api_dashboard():
     listado = not es_invitado()
     return jsonify(
         desde=desde.isoformat(), hasta=hasta.isoformat(), terminales=TERMINALES, listado=listado,
+        estados=ESTADOS, disponibles=sorted(DISPONIBLES),
         filas=[[f["fecha"].isoformat(), f["interno"] if listado else "", f["placa"] if listado else "", f["tipo_bus"],
                 f["marca_chasis"], f["terminal_real"], f["operativo"], f["observacion"] if listado else "", f["motivo"]]
                for f in filas],
@@ -973,8 +979,10 @@ def _evolucion(diario, grano):
     """Promedio diario de buses operativos y en mantenimiento por período, y de buses en mantenimiento por motivo."""
     dias = {}
     for f in diario:
-        x = dias.setdefault(f["fecha"], {"op": 0, "mt": 0, "mot": {}})
-        if f["operativo"] == "Operativo":
+        x = dias.setdefault(f["fecha"], {"op": 0, "ca": 0, "mt": 0, "mot": {}})
+        if f["operativo"] == "En carga":
+            x["ca"] += 1
+        elif f["operativo"] != "Mantenimiento":
             x["op"] += 1
         else:
             x["mt"] += 1
@@ -982,15 +990,17 @@ def _evolucion(diario, grano):
     per = {}
     for d in sorted(dias):
         clave, etiqueta = _periodo(d, grano)
-        p = per.setdefault(clave, {"etiqueta": etiqueta, "desde": d, "dias": 0, "op": 0, "mt": 0, "mot": {}})
-        p["dias"] += 1; p["op"] += dias[d]["op"]; p["mt"] += dias[d]["mt"]; p["hasta"] = d
+        p = per.setdefault(clave, {"etiqueta": etiqueta, "desde": d, "dias": 0, "op": 0, "ca": 0, "mt": 0, "mot": {}})
+        p["dias"] += 1; p["op"] += dias[d]["op"]; p["ca"] += dias[d]["ca"]; p["mt"] += dias[d]["mt"]; p["hasta"] = d
         for k, n in dias[d]["mot"].items():
             _contar(p["mot"], k, n)
     out = []
     for p in per.values():
-        n, t = p["dias"], p["op"] + p["mt"]
+        n, t = p["dias"], p["op"] + p["ca"] + p["mt"]
+        disp = p["op"] + (p["ca"] if "En carga" in DISPONIBLES else 0)
         out.append({"etiqueta": p["etiqueta"], "desde": p["desde"].isoformat(), "hasta": p["hasta"].isoformat(), "dias": n,
-                    "op": round(p["op"] / n, 1), "mt": round(p["mt"] / n, 1), "disp": round(p["op"] / t * 100, 1) if t else None,
+                    "op": round(p["op"] / n, 1), "ca": round(p["ca"] / n, 1), "mt": round(p["mt"] / n, 1),
+                    "disp": round(disp / t * 100, 1) if t else None,
                     "motivos": {k: round(v / n, 1) for k, v in p["mot"].items()}})
     return out
 
@@ -1072,13 +1082,13 @@ def _por_hora(eventos, semilla, desde, hasta, punta):
                 (pendientes.append(evs[j]) if evs[j]["fecha"] > d else _aplicar(actual, evs[j])); j += 1
             if not actual:   # antes del primer reporte: sin datos
                 fila.append(None); continue
-            op = sum(1 for x in actual.values() if x[1] == "Operativo")
+            op = sum(1 for x in actual.values() if x[1] in DISPONIBLES)
             fila.append(round(op / len(actual) * 100, 1))
             if h in punta:
                 por_t = {}
                 for x in actual.values():
                     c = por_t.setdefault(x[2], [0, 0])
-                    c[0] += x[1] == "Operativo"; c[1] += 1
+                    c[0] += x[1] in DISPONIBLES; c[1] += 1
                 pt[h] = por_t
         if any(v is not None for v in fila):
             dias.append({"fecha": d.isoformat(), "h": fila, "punta": pt})
@@ -1241,7 +1251,7 @@ def api_tableros():
     n_dias = len({f["fecha"] for f in diario}) or 1
     for f in diario:
         x = term.setdefault(f["terminal_real"], {"terminal": f["terminal_real"], "dias_bus": 0, "op": 0})
-        x["dias_bus"] += 1; x["op"] += f["operativo"] == "Operativo"
+        x["dias_bus"] += 1; x["op"] += f["operativo"] in DISPONIBLES
     tiempos_t = {r["nombre"]: r for r in _resumen_tiempos(rango, "terminal", fin_def)}
     reinc_t = {}
     for r in reincid:
@@ -1273,7 +1283,7 @@ def api_tableros():
     ahora_ = ahora()
     return jsonify(
         desde=desde.isoformat(), hasta=hasta.isoformat(), grano=grano, umbral=umbral, listado=listado,
-        terminales=TERMINALES, horas_punta=punta, dias_reincidencia=DIAS_REINCIDENCIA,
+        terminales=TERMINALES, horas_punta=punta, dias_reincidencia=DIAS_REINCIDENCIA, en_carga_disponible="En carga" in DISPONIBLES,
         evolucion=_evolucion(diario, grano),
         tiempos={"motivo": _resumen_tiempos(rango, "motivo", fin_def), "terminal": list(tiempos_t.values()),
                  "mediana_h": _mediana([_horas(ep, fin_def) for ep in rango if ep["fin"]]), "reparados": sum(1 for ep in rango if ep["fin"])},
