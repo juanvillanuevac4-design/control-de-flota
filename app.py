@@ -356,11 +356,18 @@ def mapa_ficticio():
     return g.mapa_ficticio
 
 
+# Nombres reales de terminales -> ficticios para el perfil invitado ("Otro" se mantiene).
+TERMINALES_FICTICIAS = {"pie andino": "Terminal Norte", "aguirre luco": "Terminal Centro", "juanita": "Terminal Sur"}
+PATRON_TERMINALES = re.compile(r"\b(" + "|".join(TERMINALES_FICTICIAS) + r")\b", re.IGNORECASE)
+
+
 def ocultar(v):
-    """Reemplaza internos y placas reales por ficticios dentro de cualquier valor (texto, lista o dict)."""
+    """Reemplaza internos, placas y nombres de terminales reales por ficticios en cualquier valor (texto, lista o dict)."""
     if isinstance(v, str):
         m, patron = mapa_ficticio()
-        return patron.sub(lambda x: m[x.group(1)], v) if patron else v
+        v = patron.sub(lambda x: m[x.group(1)], v) if patron else v
+        f = lambda x: TERMINALES_FICTICIAS[x.group(1).lower()]
+        return PATRON_TERMINALES.sub(lambda x: f(x).upper() if x.group(1).isupper() else f(x), v)
     if isinstance(v, list):
         return [ocultar(x) for x in v]
     if isinstance(v, dict):
