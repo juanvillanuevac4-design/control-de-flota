@@ -403,6 +403,8 @@ def _iniciar_bd():
             _carga_excel_14_11(cx)
         if cx.execute("INSERT INTO migraciones (nombre) VALUES ('motivos_por_sistema') ON CONFLICT DO NOTHING RETURNING 1").fetchone():
             _motivos_por_sistema(cx)
+        if cx.execute("INSERT INTO migraciones (nombre) VALUES ('repuestos_provisorios') ON CONFLICT DO NOTHING RETURNING 1").fetchone():
+            _repuestos_provisorios(cx)
         cx.execute(SCHEMA_PROTEGER_CAMBIOS)
         hay_admin = cx.execute("SELECT 1 FROM usuarios WHERE rol='admin' AND activo").fetchone()
         if not hay_admin and ADMIN_CLAVE:
@@ -416,6 +418,31 @@ def _iniciar_bd():
         if cx.execute("SELECT 1 FROM pg_roles WHERE rolname=%s", (ROL_APP,)).fetchone():
             cx.execute(PERMISOS_APP)
             app.logger.info("Permisos del rol %s actualizados", ROL_APP)
+
+
+def _repuestos_provisorios(cx):
+    """Una sola vez (pedido de Juan Patricio, 20-11-2026): nómina provisoria con stock al azar entre 3 y 20 y stock
+    de seguridad 2. Cada repuesto y su stock inicial quedan en la bitácora como cualquier alta hecha por el admin."""
+    import random
+    from repuestos_provisorios import REPUESTOS
+    u = {"usuario": "sistema", "nombre": "Nómina provisoria (Juan Patricio)", "rol": "sistema"}
+    n = ahora()
+    filas = []
+    for codigo, desc, sistemas, valor in REPUESTOS:
+        r = cx.execute("""INSERT INTO repuestos (codigo, descripcion, sistemas, valor, stock_seguridad) VALUES (%s,%s,%s,%s,2)
+                          ON CONFLICT (codigo) DO NOTHING RETURNING id""", (codigo, desc, sistemas, valor)).fetchone()
+        if not r:
+            continue
+        stock = random.randint(3, 20)
+        cx.execute("""INSERT INTO movimientos_repuesto (ts, repuesto_id, tipo, cantidad, usuario, nombre)
+                      VALUES (%s,%s,'ingreso',%s,%s,%s)""", (n, r["id"], stock, u["usuario"], u["nombre"]))
+        comun = dict(origen="Carga de datos", objeto=desc)
+        filas += [dict(comun, accion="Repuesto agregado a la nómina",
+                       detalle=f"Código {codigo}, {', '.join(sistemas)}, ${valor:,}".replace(",", ".") + ", stock de seguridad 2, provisorio"),
+                  dict(comun, accion="Ingreso a bodega", campo="Stock en bodega", antes="0", despues=str(stock),
+                       detalle="Stock inicial provisorio (al azar, pedido de Juan Patricio)")]
+    registrar_varias(cx, filas, u, n)
+    app.logger.info("Nómina provisoria: %s repuestos cargados", len(filas) // 2)
 
 
 def _normalizar(t):
