@@ -50,13 +50,13 @@ DISPONIBLES = {"Operativo"}
 # Columnas de la hoja "Base"
 COLUMNAS_BASE = ["Fecha", "Hora", "Encargado", "PLACA", "INTERNO", "TIPO BUS", "TIPO FLOTA", "MARCA CHASIS",
                  "TERMINAL OP", "Terminal Real", "Operativo", "Motivo mantenimiento", "Observacion",
-                 "Último cambio", "Cambiado por", "Sistema"]
+                 "N° de OT", "Último cambio", "Cambiado por", "Sistema"]
 COLUMNAS_CAMBIOS = ["Fecha y hora", "Fecha reporte", "Tipo", "Usuario", "Nombre", "PLACA", "INTERNO", "TIPO BUS",
                     "TIPO FLOTA", "MARCA CHASIS", "TERMINAL OP", "Terminal Real", "Operativo", "Motivo mantenimiento",
-                    "Observacion"]
+                    "Observacion", "N° de OT"]
 MOTIVOS_INICIALES = ["Mecánica", "Eléctrica", "Carrocería", "Neumáticos", "Frenos", "Climatización", "Aire acondicionado",
                      "Revisión técnica", "Siniestro", "Validador / Torniquete", "Otro"]
-CAMPOS = ("terminal_real", "operativo", "motivo", "observacion")
+CAMPOS = ("terminal_real", "operativo", "motivo", "observacion", "ot")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS buses (
@@ -117,6 +117,9 @@ ALTER TABLE base DROP CONSTRAINT IF EXISTS base_operativo_check;
 ALTER TABLE base ADD CONSTRAINT base_operativo_check CHECK (operativo IN ('Operativo','En carga','Mantenimiento'));
 ALTER TABLE base ADD COLUMN IF NOT EXISTS cambio_ts TIMESTAMPTZ;
 ALTER TABLE base ADD COLUMN IF NOT EXISTS cambio_por TEXT NOT NULL DEFAULT '';
+-- N° de OT (orden de trabajo que se abre cuando el bus entra a mantenimiento), pedido de Juan Patricio 20-11-2026.
+-- Solo se guarda en Mantenimiento; el historial `cambios` conserva la OT de cada episodio.
+ALTER TABLE base ADD COLUMN IF NOT EXISTS ot TEXT NOT NULL DEFAULT '';
 -- Motivos de mantenimiento (lista desplegable con mantenedor)
 CREATE TABLE IF NOT EXISTS motivos (
     id SERIAL PRIMARY KEY,
@@ -139,6 +142,7 @@ CREATE TABLE IF NOT EXISTS cambios (
     motivo TEXT NOT NULL DEFAULT '',
     observacion TEXT NOT NULL DEFAULT ''
 );
+ALTER TABLE cambios ADD COLUMN IF NOT EXISTS ot TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS cambios_interno_ts ON cambios (interno, ts DESC);
 CREATE INDEX IF NOT EXISTS cambios_ts ON cambios (ts);
 CREATE TABLE IF NOT EXISTS migraciones (nombre TEXT PRIMARY KEY, fecha TIMESTAMPTZ NOT NULL DEFAULT now());
@@ -229,7 +233,7 @@ CREATE TRIGGER cambios_sin_vaciar BEFORE TRUNCATE ON cambios FOR EACH STATEMENT 
 """
 
 NOMBRE_CAMPO = {"terminal_real": "Terminal Real", "operativo": "Estado", "motivo": "Motivo mantenimiento",
-                "observacion": "Observación"}
+                "observacion": "Observación", "ot": "N° de OT"}
 ORIGENES = {"arrastre": "Arrastre entre terminales", "doble_click": "Doble click", "selector": "Selector de estado", "detalle": "Ventana del bus",
             "pantalla": "Reporte diario"}
 NOMBRE_ROL = {"admin": "Administrador", "operador": "Operador", "invitado": "Invitado"}
@@ -919,7 +923,7 @@ def fila_json(r):
         "placa": r["placa"], "interno": r["interno"], "tipo_bus": r["tipo_bus"], "tipo_flota": r["tipo_flota"],
         "marca_chasis": r["marca_chasis"], "terminal_op": r["terminal_op"],
         "terminal_real": r["terminal_real"], "operativo": r["operativo"], "motivo": r.get("motivo") or "",
-        "observacion": r["observacion"], "cambio_por": r.get("cambio_por") or "",
+        "observacion": r["observacion"], "ot": r.get("ot") or "", "cambio_por": r.get("cambio_por") or "",
         "cambio_ts": r["cambio_ts"].astimezone(TZ).strftime("%d-%m %H:%M") if r.get("cambio_ts") else "",
     }
 
@@ -945,6 +949,7 @@ def prellenado(cx, fecha):
             "operativo": p["operativo"] if p else b["ini_estado"],
             "motivo": (p.get("motivo") or "") if p else "",
             "observacion": p["observacion"] if p else "",
+            "ot": (p.get("ot") or "") if p else "",
             "cambio_por": "", "cambio_ts": "",
         })
     return ant, filas
@@ -1000,6 +1005,7 @@ def api_guardar_reporte():
             "terminal_real": f["terminal_real"], "operativo": f["operativo"],
             "motivo": (f.get("motivo") or "").strip()[:120] if f["operativo"] == "Mantenimiento" else "",
             "observacion": (f.get("observacion") or "").strip()[:500],
+            "ot": (f.get("ot") or "").strip()[:60] if f["operativo"] == "Mantenimiento" else "",
             "origen": ORIGENES.get(f.get("origen"), ORIGENES["pantalla"]),
         }
     with conectar() as cx:
@@ -1015,17 +1021,17 @@ def api_guardar_reporte():
             _, filas = prellenado(cx, fecha)
             cx.cursor().executemany(
                 """INSERT INTO base (reporte_id, fecha, hora, encargado, placa, interno, tipo_bus, tipo_flota,
-                                     marca_chasis, terminal_op, terminal_real, operativo, motivo, observacion)
-                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
+                                     marca_chasis, terminal_op, terminal_real, operativo, motivo, observacion, ot)
+                   VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)""",
                 [(rid, fecha, hora, encargado, f["placa"], f["interno"], f["tipo_bus"], f["tipo_flota"],
                   f["marca_chasis"], f["terminal_op"], f["terminal_real"], f["operativo"], f["motivo"],
-                  f["observacion"]) for f in filas],
+                  f["observacion"], f["ot"]) for f in filas],
             )
             cx.cursor().executemany(
-                """INSERT INTO cambios (ts, fecha, tipo, usuario, nombre, interno, terminal_real, operativo, motivo, observacion)
-                   VALUES (%s,%s,'inicial',%s,%s,%s,%s,%s,%s,%s)""",
+                """INSERT INTO cambios (ts, fecha, tipo, usuario, nombre, interno, terminal_real, operativo, motivo, observacion, ot)
+                   VALUES (%s,%s,'inicial',%s,%s,%s,%s,%s,%s,%s,%s)""",
                 [(n, fecha, u["usuario"], u["nombre"], f["interno"], f["terminal_real"], f["operativo"], f["motivo"],
-                  f["observacion"]) for f in filas],
+                  f["observacion"], f["ot"]) for f in filas],
             )
             ant = cx.execute("SELECT fecha FROM reportes WHERE fecha < %s ORDER BY fecha DESC LIMIT 1", (fecha,)).fetchone()
             registrar(cx, "Reporte del día creado", ORIGENES["pantalla"], u, n, fecha_reporte=fecha,
@@ -1050,14 +1056,15 @@ def api_guardar_reporte():
         for i in cambiados:
             e = entradas[i]
             cx.execute(
-                """UPDATE base SET terminal_real=%s, operativo=%s, motivo=%s, observacion=%s, cambio_ts=%s, cambio_por=%s
+                """UPDATE base SET terminal_real=%s, operativo=%s, motivo=%s, observacion=%s, ot=%s, cambio_ts=%s, cambio_por=%s
                    WHERE reporte_id=%s AND interno=%s""",
-                (e["terminal_real"], e["operativo"], e["motivo"], e["observacion"], n, u["nombre"], rid, i),
+                (e["terminal_real"], e["operativo"], e["motivo"], e["observacion"], e["ot"], n, u["nombre"], rid, i),
             )
             cx.execute(
-                """INSERT INTO cambios (ts, fecha, tipo, usuario, nombre, interno, terminal_real, operativo, motivo, observacion)
-                   VALUES (%s,%s,'cambio',%s,%s,%s,%s,%s,%s,%s)""",
-                (n, fecha, u["usuario"], u["nombre"], i, e["terminal_real"], e["operativo"], e["motivo"], e["observacion"]),
+                """INSERT INTO cambios (ts, fecha, tipo, usuario, nombre, interno, terminal_real, operativo, motivo, observacion, ot)
+                   VALUES (%s,%s,'cambio',%s,%s,%s,%s,%s,%s,%s,%s)""",
+                (n, fecha, u["usuario"], u["nombre"], i, e["terminal_real"], e["operativo"], e["motivo"], e["observacion"],
+                 e["ot"]),
             )
     return jsonify(ok=True, creado=nuevo, cambios=len(cambiados), hora=n.strftime("%H:%M"))
 
@@ -1102,7 +1109,7 @@ def estado_diario(cx, desde, hasta):
         """SELECT x.*, r.hora, r.encargado, b.placa, b.tipo_bus, b.tipo_flota, b.marca_chasis, b.terminal_op,
                   ult.ts AS cambio_ts, ult.nombre AS cambio_por,
                   coalesce(ms.sistema, x.motivo) AS sistema
-           FROM (SELECT DISTINCT ON (fecha, interno) fecha, interno, terminal_real, operativo, motivo, observacion
+           FROM (SELECT DISTINCT ON (fecha, interno) fecha, interno, terminal_real, operativo, motivo, observacion, ot
                  FROM cambios WHERE fecha BETWEEN %s AND %s ORDER BY fecha, interno, ts DESC, id DESC) x
            LEFT JOIN motivo_sistema_actual ms ON ms.motivo = x.motivo
            JOIN buses b ON b.interno = x.interno
@@ -1587,7 +1594,7 @@ def filas_descarga():
         filas = estado_diario(cx, desde, hasta)
     return [[f["fecha"], f["hora"].strftime("%H:%M"), f["encargado"], f["placa"], f["interno"], f["tipo_bus"],
              f["tipo_flota"], f["marca_chasis"], f["terminal_op"], f["terminal_real"], f["operativo"], f["motivo"],
-             f["observacion"], f["cambio_ts"].astimezone(TZ).strftime("%d-%m-%Y %H:%M") if f["cambio_ts"] else "",
+             f["observacion"], f["ot"], f["cambio_ts"].astimezone(TZ).strftime("%d-%m-%Y %H:%M") if f["cambio_ts"] else "",
              f["cambio_por"], f["sistema"] if f["operativo"] == "Mantenimiento" else ""] for f in filas]
 
 
@@ -1611,12 +1618,12 @@ def filas_estado(momento):
                 ORDER BY {ORDEN_INTERNO}""", (momento + timedelta(seconds=59, microseconds=999999), momento.date())
         ).fetchall()
     return [[momento.strftime("%d-%m-%Y %H:%M"), f["placa"], f["interno"], f["tipo_bus"], f["tipo_flota"],
-             f["marca_chasis"], f["terminal_op"], f["terminal_real"], f["operativo"], f["motivo"], f["observacion"],
+             f["marca_chasis"], f["terminal_op"], f["terminal_real"], f["operativo"], f["motivo"], f["observacion"], f["ot"],
              f["ts"].astimezone(TZ).strftime("%d-%m-%Y %H:%M"), f["nombre"]] for f in filas]
 
 
 COLUMNAS_ESTADO = ["Estado al", "PLACA", "INTERNO", "TIPO BUS", "TIPO FLOTA", "MARCA CHASIS", "TERMINAL OP",
-                   "Terminal Real", "Operativo", "Motivo mantenimiento", "Observacion", "Último cambio", "Cambiado por"]
+                   "Terminal Real", "Operativo", "Motivo mantenimiento", "Observacion", "N° de OT", "Último cambio", "Cambiado por"]
 
 
 def filas_cambios():
@@ -1631,7 +1638,7 @@ def filas_cambios():
     return [[f["ts"].astimezone(TZ).strftime("%d-%m-%Y %H:%M:%S"), f["fecha"].strftime("%d-%m-%Y"),
              "Foto inicial" if f["tipo"] == "inicial" else "Cambio", f["usuario"], f["nombre"], f["placa"], f["interno"],
              f["tipo_bus"], f["tipo_flota"], f["marca_chasis"], f["terminal_op"], f["terminal_real"], f["operativo"],
-             f["motivo"], f["observacion"]] for f in filas]
+             f["motivo"], f["observacion"], f["ot"]] for f in filas]
 
 
 COLUMNAS_BITACORA = ["Fecha y hora", "Usuario", "Nombre", "Rol", "Origen", "Acción", "Fecha reporte", "INTERNO",
