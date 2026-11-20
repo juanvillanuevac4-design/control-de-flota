@@ -19,6 +19,8 @@ h1{font-size:1.45rem;font-weight:800}
 .num{text-align:right;font-family:var(--f-mono);font-variant-numeric:tabular-nums}
 .off td{opacity:.55}
 .bajo{color:var(--mt);font-weight:700}
+.graf2{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,460px),1fr));gap:12px}
+.cv{position:relative;height:280px}
 tr.quiebre td{background:var(--mt-bg)} tr.minimo td{background:var(--warn-bg)}
 td .row{gap:6px;align-items:center;flex-wrap:nowrap}
 td input[type=number]{width:90px}
@@ -43,6 +45,7 @@ div.f{display:flex;flex-direction:column;gap:4px;font-size:.8rem;color:var(--mut
     <button role="tab" data-tab="activas" aria-selected="true">OT activas</button>
     <button role="tab" data-tab="cerradas" aria-selected="false">OT cerradas</button>
     <button role="tab" data-tab="nomina" aria-selected="false">Nómina de repuestos</button>
+    <button role="tab" data-tab="gasto" aria-selected="false">Gasto OT cerradas</button>
   </div>
 
   <section id="p-activas">
@@ -63,6 +66,23 @@ div.f{display:flex;flex-direction:column;gap:4px;font-size:.8rem;color:var(--mut
   <section id="p-cerradas" hidden>
     <p class="note" style="margin-bottom:10px">OT de buses que ya salieron de mantenimiento y tienen repuestos asignados (las 100 más recientes). Se pueden quitar repuestos para corregir.</p>
     <div class="ots" id="l-cerradas"></div>
+  </section>
+
+  <section id="p-gasto" hidden>
+    <div class="card pad row" style="margin-bottom:12px">
+      <label class="f">Cierre desde<input type="date" id="g-desde"></label>
+      <label class="f">Hasta<input type="date" id="g-hasta"></label>
+      <button class="btn" id="g-ver">Ver</button>
+      <span id="desc-gasto" class="row" style="gap:8px"><a class="btn sec" id="g-xlsx" href="#">Gasto OT (Excel)</a><a class="btn sec" id="g-csv" href="#">CSV</a></span>
+    </div>
+    <p class="note" style="margin-bottom:12px">OT ya cerradas (el bus salió de esa OT), contadas en el mes de cierre. El gasto es el valor de los repuestos asignados. El sistema es el del motivo de la OT.</p>
+    <div class="kpis" style="margin-bottom:12px" id="g-kpis"></div>
+    <div class="graf2">
+      <div class="card pad"><h2>Gasto por mes</h2><div class="cv"><canvas id="g-mes"></canvas></div></div>
+      <div class="card pad"><h2>Gasto por sistema</h2><div class="cv"><canvas id="g-sis"></canvas></div></div>
+      <div class="card pad" id="g-bus-card"><h2>Buses con más gasto</h2><div class="scroll" id="g-bus"></div></div>
+      <div class="card pad"><h2>Repuestos más usados</h2><div class="scroll" id="g-rep"></div></div>
+    </div>
   </section>
 
   <section id="p-nomina" hidden class="card pad">
@@ -88,6 +108,7 @@ div.f{display:flex;flex-direction:column;gap:4px;font-size:.8rem;color:var(--mut
     <div class="scroll"><table><thead id="h-r"></thead><tbody id="t-r"></tbody></table></div>
   </section>
 </div>
+<script src="/static/chart.umd.min.js"></script>
 <script src="/static/comun.js"></script>
 <script>
 const $ = id => document.getElementById(id);
@@ -203,8 +224,43 @@ $("f-r").addEventListener("submit", async e => { e.preventDefault();
   const b = {sistemas: elegidos($("r-sistemas"))}; ["codigo", "descripcion", "valor", "stock", "stock_seguridad"].forEach(k => b[k] = $("r-" + k).value);
   if (!b.sistemas.length) return aviso("Elige al menos un sistema para el repuesto.");
   if (await hacer("/api/admin/repuestos", b, "Repuesto agregado.")) { e.target.reset(); $("r-stock").value = 0; $("r-stock_seguridad").value = 0; $("r-sistemas").innerHTML = multiSistemas([], ""); } });
+// ---- Gasto de OT cerradas ----
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const graficos = {};
+function grafico(id, cfg) {
+  graficos[id]?.destroy();
+  Chart.defaults.font.family = css("--f-display"); Chart.defaults.color = css("--muted"); Chart.defaults.borderColor = css("--line");
+  cfg.options = Object.assign({maintainAspectRatio: false, plugins: {legend: {display: false}, tooltip: {callbacks: {label: c => clp(c.parsed[cfg.options?.indexAxis === "y" ? "x" : "y"])}}}}, cfg.options);
+  graficos[id] = new Chart($(id), cfg);
+}
+const MESES = ["ene", "feb", "mar", "abr", "may", "jun", "jul", "ago", "sep", "oct", "nov", "dic"];
+const kpi = (t, v, s = "") => `<div class="kpi"><span>${t}</span><b>${v}</b>${s ? `<small>${s}</small>` : ""}</div>`;
+async function cargarGasto() {
+  const q = `?desde=${$("g-desde").value}&hasta=${$("g-hasta").value}`;
+  let G; try { G = await api("/api/ot-gasto" + q); } catch (x) { return aviso(x.message); }
+  $("g-desde").value = G.desde; $("g-hasta").value = G.hasta;
+  $("g-xlsx").href = "/api/ot-gasto.xlsx" + q; $("g-csv").href = "/api/ot-gasto.csv" + q;
+  $("g-kpis").innerHTML = kpi("OT cerradas", G.n) + kpi("Gasto total", clp(G.total)) + kpi("Gasto promedio por OT", clp(G.promedio))
+    + kpi("Sistema con más gasto", G.por_sistema[0] ? esc(G.por_sistema[0].sistema) : "–", G.por_sistema[0] ? clp(G.por_sistema[0].gasto) : "");
+  grafico("g-mes", {type: "bar", data: {labels: G.por_mes.map(m => MESES[+m.mes.slice(5) - 1] + " " + m.mes.slice(2, 4)),
+    datasets: [{data: G.por_mes.map(m => m.gasto), backgroundColor: css("--accent"), borderRadius: 4, maxBarThickness: 40}]},
+    options: {scales: {y: {ticks: {callback: v => clp(v)}}}}});
+  grafico("g-sis", {type: "bar", data: {labels: G.por_sistema.map(s => s.sistema),
+    datasets: [{data: G.por_sistema.map(s => s.gasto), backgroundColor: css("--t3"), borderRadius: 4, maxBarThickness: 26}]},
+    options: {indexAxis: "y", scales: {x: {ticks: {callback: v => clp(v)}}}}});
+  $("g-bus-card").hidden = !G.listado;
+  $("g-bus").innerHTML = G.por_bus.length ? `<table><thead><tr><th>Interno</th><th class="num">OT</th><th class="num">Gasto</th></tr></thead><tbody>${G.por_bus.map(b =>
+    `<tr><td class="mono"><b>${esc(b.interno)}</b></td><td class="num">${b.ots}</td><td class="num">${clp(b.gasto)}</td></tr>`).join("")}</tbody></table>` : `<p class="note">Sin OT cerradas en el rango.</p>`;
+  $("g-rep").innerHTML = G.repuestos.length ? `<table><thead><tr><th>Repuesto</th><th class="num">Cant.</th><th class="num">OT</th><th class="num">Gasto</th></tr></thead><tbody>${G.repuestos.map(r =>
+    `<tr><td><span class="mono">${esc(r.codigo)}</span> ${esc(r.descripcion)}</td><td class="num">${r.cantidad}</td><td class="num">${r.ots}</td><td class="num">${clp(r.gasto)}</td></tr>`).join("")}</tbody></table>` : `<p class="note">Sin repuestos en OT cerradas del rango.</p>`;
+}
+let gastoCargado = false;
+document.querySelector('[data-tab="gasto"]').addEventListener("click", () => { if (!gastoCargado) { gastoCargado = true; cargarGasto(); } });
+$("g-ver").onclick = cargarGasto;
+
 (async () => {
   yo = await barra("/ot");
+  if (yo.rol === "invitado") $("desc-gasto").hidden = true;
   $("f-r").hidden = !admin();
   if (yo.rol === "invitado") { $("desc-ot").hidden = true; $("desc-rep").hidden = true; }
   const tab = leerPref("ot-tab", "activas"); const b = document.querySelector(`[data-tab="${tab}"]`); if (b) b.click();

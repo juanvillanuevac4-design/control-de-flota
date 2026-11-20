@@ -2311,6 +2311,141 @@ def api_movimientos_descarga(fmt):
             else como_csv(COLUMNAS_MOV, filas, "movimientos_bodega"))
 
 
+# ---------- Gasto de OT cerradas y respaldo de la base (20-11-2026) ----------
+
+def ots_cerradas(cx):
+    """OT con repuestos que ya no están activas, con su fecha de cierre (primer cambio del bus a otra OT o a otro estado
+    después del último registro con esa OT) y el sistema del motivo. Devuelve (ots, lineas por (interno, ot))."""
+    activas = {(a["interno"], a["ot"]) for a in ots_actuales(cx)}
+    lineas = {}
+    for l in lineas_ot(cx):
+        if (l["interno"], l["ot"]) not in activas:
+            lineas.setdefault((l["interno"], l["ot"]), []).append(l)
+    ots = []
+    for (i, ot), ls in lineas.items():
+        r = cx.execute(
+            """SELECT x.desde, x.ultimo, x.motivo, COALESCE(s.sistema, NULLIF(x.motivo, ''), 'Sin motivo') AS sistema,
+                      (SELECT min(c.ts) FROM cambios c WHERE c.interno = %(i)s AND c.ts > x.ultimo AND c.ot <> %(ot)s) AS cierre
+               FROM (SELECT min(ts) AS desde, max(ts) AS ultimo,
+                            (SELECT motivo FROM cambios WHERE interno = %(i)s AND ot = %(ot)s ORDER BY ts DESC, id DESC LIMIT 1) AS motivo
+                     FROM cambios WHERE interno = %(i)s AND ot = %(ot)s) x
+               LEFT JOIN motivo_sistema_actual s ON s.motivo = x.motivo""", {"i": i, "ot": ot}).fetchone()
+        cierre = r["cierre"] or r["ultimo"] or max(l["ultimo"] for l in ls)
+        ots.append({"interno": i, "ot": ot, "desde": r["desde"], "cierre": cierre, "motivo": r["motivo"] or "",
+                    "sistema": r["sistema"], "lineas": ls, "total": sum(l["costo"] for l in ls)})
+    ots.sort(key=lambda o: o["cierre"], reverse=True)
+    return ots
+
+
+def _gasto_rango():
+    hoy = ahora().date()
+    hasta = parse_fecha(request.args.get("hasta"), hoy)
+    y, m = (hasta.year, hasta.month - 11) if hasta.month == 12 else (hasta.year - 1, hasta.month + 1)
+    desde = parse_fecha(request.args.get("desde"), date(y, m, 1))   # por defecto, los últimos 12 meses
+    return (desde, hasta) if desde <= hasta else (hasta, desde)
+
+
+def _gasto_filtrado(cx):
+    desde, hasta = _gasto_rango()
+    ots = [o for o in ots_cerradas(cx) if desde <= o["cierre"].astimezone(TZ).date() <= hasta]
+    return desde, hasta, ots
+
+
+@app.get("/api/ot-gasto")
+@requiere_login
+def api_ot_gasto():
+    """Tablero del gasto en OT cerradas (por fecha de cierre): por mes, por sistema, por bus y repuestos más usados."""
+    with conectar() as cx:
+        desde, hasta, ots = _gasto_filtrado(cx)
+    por_mes, por_sistema, por_bus, rep = {}, {}, {}, {}
+    m, d = desde.replace(day=1), hasta.replace(day=1)
+    while m <= d:   # todos los meses del rango, también los sin gasto
+        por_mes[m.strftime("%Y-%m")] = 0
+        m = date(m.year + (m.month == 12), m.month % 12 + 1, 1)
+    for o in ots:
+        _contar(por_mes, o["cierre"].astimezone(TZ).strftime("%Y-%m"), o["total"])
+        _contar(por_sistema, o["sistema"], o["total"])
+        b = por_bus.setdefault(o["interno"], {"interno": o["interno"], "ots": 0, "gasto": 0})
+        b["ots"] += 1; b["gasto"] += o["total"]
+        for l in o["lineas"]:
+            x = rep.setdefault(l["repuesto_id"], {"codigo": l["codigo"], "descripcion": l["descripcion"], "cantidad": 0, "gasto": 0, "ots": 0})
+            x["cantidad"] += l["cantidad"]; x["gasto"] += l["costo"]; x["ots"] += 1
+    total = sum(o["total"] for o in ots)
+    listado = not es_invitado()   # el invitado ve totales, no el detalle por bus
+    return jsonify(
+        desde=desde.isoformat(), hasta=hasta.isoformat(), total=int(total), n=len(ots),
+        promedio=round(total / len(ots)) if ots else 0,
+        por_mes=[{"mes": k, "gasto": int(v)} for k, v in sorted(por_mes.items())],
+        por_sistema=[{"sistema": k, "gasto": int(v)} for k, v in sorted(por_sistema.items(), key=lambda kv: -kv[1])],
+        por_bus=sorted(({**b, "gasto": int(b["gasto"])} for b in por_bus.values()), key=lambda b: -b["gasto"])[:20] if listado else [],
+        repuestos=sorted(({**r, "gasto": int(r["gasto"])} for r in rep.values()), key=lambda r: (-r["cantidad"], -r["gasto"]))[:15],
+        listado=listado)
+
+
+COLUMNAS_GASTO = ["Interno", "N° de OT", "En mantenimiento desde", "Cierre", "Mes de cierre", "Motivo", "Sistema de la OT",
+                  "Código", "Repuesto", "Cantidad", "Costo (CLP)", "Total OT (CLP)"]
+
+
+@app.get("/api/ot-gasto.<fmt>")
+@requiere_login
+@sin_listado_para_invitado
+def api_ot_gasto_descarga(fmt):
+    with conectar() as cx:
+        desde, hasta, ots = _gasto_filtrado(cx)
+        registrar_descarga(cx, "Gasto de OT cerradas", fmt)
+    f = lambda t: t.astimezone(TZ).strftime("%d-%m-%Y %H:%M") if t else ""
+    filas = [[o["interno"], o["ot"], f(o["desde"]), f(o["cierre"]), o["cierre"].astimezone(TZ).strftime("%Y-%m"), o["motivo"],
+              o["sistema"], l["codigo"], l["descripcion"], l["cantidad"], int(l["costo"]), int(o["total"])]
+             for o in ots for l in o["lineas"]]
+    nombre = f"gasto_ot_{desde:%Y%m%d}_{hasta:%Y%m%d}"
+    return como_xlsx(COLUMNAS_GASTO, filas, nombre, "Gasto OT") if fmt == "xlsx" else como_csv(COLUMNAS_GASTO, filas, nombre)
+
+
+# Respaldo: todas las tablas en un Excel, una hoja por tabla. Las contraseñas (hash) nunca salen.
+TABLAS_RESPALDO = ["buses", "reportes", "base", "cambios", "motivos", "motivo_sistema", "parametros", "metas",
+                   "repuestos", "movimientos_repuesto", "usuarios", "bitacora", "migraciones"]
+COLUMNAS_OCULTAS = {"usuarios": {"clave_hash"}}
+
+
+def _celda(v):
+    if isinstance(v, datetime):
+        return v.astimezone(TZ).replace(tzinfo=None) if v.tzinfo else v
+    if isinstance(v, (list, tuple)):
+        return ", ".join(map(str, v))
+    if isinstance(v, (dict, bytes)):
+        return str(v)
+    return v
+
+
+@app.get("/api/admin/respaldo.xlsx")
+@requiere_admin
+def api_admin_respaldo():
+    """Descarga de la base completa (solo admin). Incluye nombres del personal: queda en la bitácora."""
+    wb = Workbook(write_only=True)
+    resumen = []
+    with conectar() as cx:
+        for t in TABLAS_RESPALDO:
+            cols = [c["column_name"] for c in cx.execute(
+                """SELECT column_name FROM information_schema.columns WHERE table_schema = 'public' AND table_name = %s
+                   ORDER BY ordinal_position""", (t,)).fetchall() if c["column_name"] not in COLUMNAS_OCULTAS.get(t, ())]
+            if not cols:
+                continue
+            ws = wb.create_sheet(t[:31])
+            ws.append(cols)
+            n = 0
+            with cx.cursor(name=f"resp_{t}") as cur:   # cursor de servidor: no carga la tabla entera en memoria
+                cur.execute(f'SELECT {", ".join(chr(34) + c + chr(34) for c in cols)} FROM {t} ORDER BY 1')
+                for fila in cur:
+                    ws.append([_celda(fila[c]) for c in cols]); n += 1
+            resumen.append(f"{t}: {n}")
+        registrar(cx, "Descarga: respaldo completo de la base", "Descarga", usuario_actual(),
+                  detalle="xlsx; incluye datos personales del personal (sin contraseñas). " + "; ".join(resumen))
+    buf = io.BytesIO()
+    wb.save(buf)
+    return Response(buf.getvalue(), mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    headers={"Content-Disposition": f"attachment; filename=respaldo_flota_{ahora():%Y%m%d_%H%M}.xlsx"})
+
+
 @app.errorhandler(Exception)
 def error(e):
     from werkzeug.exceptions import HTTPException
