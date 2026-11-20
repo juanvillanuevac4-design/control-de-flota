@@ -69,7 +69,7 @@
   </section>
 
   <section class="card pad tools">
-    <p class="note" id="desc" style="margin:0;flex:1 1 300px">Arrastra un bus a otra terminal para moverlo. Un click (o un toque) abre el selector de estado: Operativo, En carga o Mantenimiento. Desde ahí, «Más detalle» permite cambiar terminal, motivo y observación. En celular: mantén presionado y arrastra. Cada cambio se guarda solo. Borde amarillo (oscuro en los buses en carga): cambió hoy; punto: tiene observación.</p>
+    <p class="note" id="desc" style="margin:0;flex:1 1 300px">Arrastra un bus a otra terminal para moverlo. Un click (o un toque) abre el selector de estado: Operativo, En carga o Mantenimiento. Desde ahí, «Más detalle» permite cambiar terminal, motivo, observación y, en mantenimiento, el N° de OT. En celular: mantén presionado y arrastra. Cada cambio se guarda solo. Borde amarillo (oscuro en los buses en carga): cambió hoy; punto: tiene observación.</p>
     <div class="row">
       <input type="search" id="buscar" placeholder="Buscar interno o placa" aria-label="Buscar">
       <select id="f-tipo" aria-label="Tipo de bus"><option value="">Todos los tipos</option></select>
@@ -91,6 +91,7 @@
   <label class="f">Estado<select id="d-est"></select></label>
   <label class="f" id="l-mot" hidden>Motivo de mantenimiento<select id="d-mot"></select></label>
   <label class="f">Observación<input id="d-obs" maxlength="500"></label>
+  <label class="f" id="l-ot" hidden>N° de OT<input id="d-ot" maxlength="60"></label>
   <p class="hist" id="d-h"></p>
   <div class="row"><button class="btn" value="ok">Aplicar y guardar</button><button class="btn sec" value="cancel" formnovalidate>Cancelar</button></div>
 </form></dialog>
@@ -105,7 +106,7 @@
 <script>
 let yo, datos, filas = [], guardado = {}, tGuardar, guardando = false, encargadoGuardado = "";
 const $ = id => document.getElementById(id);
-const CAMPOS = ["terminal_real", "operativo", "motivo", "observacion"];
+const CAMPOS = ["terminal_real", "operativo", "motivo", "observacion", "ot"];
 const llave = f => CAMPOS.map(c => f[c] || "").join("|");
 const opts = (lista, v) => lista.map(o => `<option ${o === v ? "selected" : ""}>${esc(o)}</option>`).join("");
 const pendientes = () => filas.filter(f => guardado[f.interno] !== llave(f));
@@ -164,7 +165,7 @@ function pintar() {
     return `<section class="col" data-t="${esc(t)}" style="flex-grow:${Math.max(g.length, 8)}"><h3>${esc(t)} <small>${op}/${g.length} operativos${ca ? ` · ${ca} en carga` : ""}</small></h3>
       <div class="bar"><i style="width:${g.length ? op / g.length * 100 : 0}%"></i></div>
       <div class="chips">${g.map(f => {
-        const tip = [f.placa, f.tipo_bus, f.operativo === "Mantenimiento" && f.motivo ? "Motivo: " + f.motivo : "", f.observacion,
+        const tip = [f.placa, f.tipo_bus, f.operativo === "Mantenimiento" && f.motivo ? "Motivo: " + f.motivo : "", f.observacion, f.ot ? "OT " + f.ot : "",
           f.cambio_ts && f.cambio_ts !== "local" ? `Cambió ${f.cambio_ts} (${f.cambio_por})` : ""].filter(Boolean).join(" · ");
         return `<button type="button" class="chip ${CLASE[f.operativo] || "mt"} ${f.cambio_ts ? "ch" : ""} ${pend.has(f.interno) ? "pend" : ""} ${f.observacion ? "obs" : ""}" data-i="${esc(f.interno)}" title="${esc(tip)}">${esc(f.interno)}</button>`;
       }).join("") || '<span class="note">Sin buses</span>'}</div></section>`;
@@ -178,7 +179,7 @@ function cambiar(interno, valores, origen) {
   const f = filas.find(x => x.interno === interno);
   origenes[interno] = origen;
   Object.assign(f, valores);
-  if (f.operativo !== "Mantenimiento") f.motivo = "";
+  if (f.operativo !== "Mantenimiento") f.motivo = f.ot = "";
   $("guardado").textContent = "";
   pintar();
   programarGuardado(150);
@@ -195,7 +196,7 @@ async function guardar(forzar) {
     pintar(); return;
   }
   guardando = true; resumen();
-  const envio = pend.map(f => ({interno: f.interno, terminal_real: f.terminal_real, operativo: f.operativo, motivo: f.motivo, observacion: f.observacion, origen: origenes[f.interno] || "pantalla"}));
+  const envio = pend.map(f => ({interno: f.interno, terminal_real: f.terminal_real, operativo: f.operativo, motivo: f.motivo, observacion: f.observacion, ot: f.ot || "", origen: origenes[f.interno] || "pantalla"}));
   const llaves = Object.fromEntries(pend.map(f => [f.interno, llave(f)]));
   try {
     const r = await api("/api/reporte", {fecha: datos.fecha, encargado: enc, filas: envio});
@@ -231,7 +232,7 @@ $("sel").addEventListener("close", () => {
   if (v === "detalle") return abrirDetalle(f.interno);
   const e = v.slice(2);
   if (e === "Mantenimiento") {   // pide el motivo en la ventana de detalle
-    abrirDetalle(f.interno); $("d-est").value = e; $("l-mot").hidden = false; return;
+    abrirDetalle(f.interno); $("d-est").value = e; $("l-mot").hidden = false; $("l-ot").hidden = false; return;
   }
   if (e !== f.operativo) cambiar(f.interno, {operativo: e}, "selector");
 });
@@ -243,16 +244,17 @@ function abrirDetalle(interno) {
   $("d-est").innerHTML = opts(datos.estados, editando.operativo);
   const mot = !editando.motivo || datos.motivos.includes(editando.motivo) ? datos.motivos : [editando.motivo, ...datos.motivos];
   $("d-mot").innerHTML = '<option value="">(sin motivo)</option>' + opts(mot, editando.motivo);
-  $("l-mot").hidden = editando.operativo !== "Mantenimiento";
+  $("l-mot").hidden = $("l-ot").hidden = editando.operativo !== "Mantenimiento";
   $("d-obs").value = editando.observacion || "";
+  $("d-ot").value = editando.ot || "";
   $("d-h").textContent = editando.cambio_ts && editando.cambio_ts !== "local" ? `Último cambio: ${editando.cambio_ts} por ${editando.cambio_por}` : "";
   $("dlg").showModal();
 }
-$("d-est").onchange = () => { $("l-mot").hidden = $("d-est").value !== "Mantenimiento"; };
+$("d-est").onchange = () => { $("l-mot").hidden = $("l-ot").hidden = $("d-est").value !== "Mantenimiento"; };
 $("dlg").addEventListener("close", () => {
   if ($("dlg").returnValue !== "ok" || !editando) return;
   cambiar(editando.interno, {terminal_real: $("d-term").value, operativo: $("d-est").value,
-    motivo: $("d-est").value === "Mantenimiento" ? $("d-mot").value : "", observacion: $("d-obs").value.trim()}, "detalle");
+    motivo: $("d-est").value === "Mantenimiento" ? $("d-mot").value : "", observacion: $("d-obs").value.trim(), ot: $("d-est").value === "Mantenimiento" ? $("d-ot").value.trim() : ""}, "detalle");
 });
 $("vC").addEventListener("click", e => {
   const b = e.target.closest(".chip");
