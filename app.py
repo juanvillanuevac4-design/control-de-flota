@@ -210,13 +210,13 @@ DROP TRIGGER IF EXISTS motivo_sistema_sin_vaciar ON motivo_sistema;
 CREATE TRIGGER motivo_sistema_sin_vaciar BEFORE TRUNCATE ON motivo_sistema FOR EACH STATEMENT EXECUTE FUNCTION solo_agregar();
 CREATE OR REPLACE VIEW motivo_sistema_actual AS
     SELECT DISTINCT ON (motivo) motivo, sistema FROM motivo_sistema ORDER BY motivo, ts DESC, id DESC;
--- Nómina de repuestos (20-11-2026): descripción, sistema del bus y valor en CLP. La mantiene el admin;
+-- Nómina de repuestos (20-11-2026): código, descripción, sistemas del bus (uno o varios) y valor en CLP. La mantiene el admin;
 -- cada cambio queda en la bitácora con el valor anterior y el nuevo.
 CREATE TABLE IF NOT EXISTS repuestos (
     id SERIAL PRIMARY KEY,
     codigo TEXT NOT NULL,  -- código único del repuesto (pedido de Juan Patricio)
     descripcion TEXT NOT NULL,
-    sistema TEXT NOT NULL,
+    sistemas TEXT[] NOT NULL CHECK (cardinality(sistemas) > 0),
     valor INT NOT NULL CHECK (valor >= 0),
     activo BOOLEAN NOT NULL DEFAULT TRUE,
     creado TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -1973,6 +1973,14 @@ def _sistemas():
     return SISTEMAS
 
 
+def _lista_sistemas(v):
+    """Sistemas elegidos, sin repetir y en el orden de la lista oficial; [] si alguno no es válido."""
+    v = [v] if isinstance(v, str) else (v if isinstance(v, list) else [])
+    if any(x not in _sistemas() for x in v):
+        return []
+    return [x for x in _sistemas() if x in v]
+
+
 def _entero(v, minimo=0):
     try:
         n = int(str(v).strip())
@@ -1987,10 +1995,10 @@ def clp(n):
 
 def lista_repuestos(cx, solo_activos=False):
     return cx.execute(
-        f"""SELECT r.id, r.codigo, r.descripcion, r.sistema, r.valor, r.activo, r.stock_seguridad,
+        f"""SELECT r.id, r.codigo, r.descripcion, r.sistemas, r.valor, r.activo, r.stock_seguridad,
                    COALESCE((SELECT sum(m.cantidad) FROM movimientos_repuesto m WHERE m.repuesto_id = r.id), 0)::int AS stock
             FROM repuestos r {"WHERE r.activo" if solo_activos else ""}
-            ORDER BY r.activo DESC, r.sistema, lower(r.descripcion)"""
+            ORDER BY r.activo DESC, lower(r.descripcion)"""
     ).fetchall()
 
 
@@ -2016,14 +2024,14 @@ def ots_actuales(cx):
 def lineas_ot(cx):
     """Repuestos asignados por (interno, OT): cantidad neta y costo con el valor fijado al asignar."""
     return cx.execute(
-        """SELECT m.interno, m.ot, m.repuesto_id, r.codigo, r.descripcion, r.sistema,
+        """SELECT m.interno, m.ot, m.repuesto_id, r.codigo, r.descripcion, array_to_string(r.sistemas, ', ') AS sistema,
                   (-sum(m.cantidad))::int AS cantidad, (-sum(m.cantidad * m.valor_unitario))::bigint AS costo,
                   max(m.ts) AS ultimo
            FROM movimientos_repuesto m JOIN repuestos r ON r.id = m.repuesto_id
            WHERE m.tipo IN ('asignacion','devolucion')
-           GROUP BY m.interno, m.ot, m.repuesto_id, r.codigo, r.descripcion, r.sistema
+           GROUP BY m.interno, m.ot, m.repuesto_id, r.codigo, r.descripcion, r.sistemas
            HAVING -sum(m.cantidad) > 0
-           ORDER BY r.sistema, lower(r.descripcion)"""
+           ORDER BY lower(r.descripcion)"""
     ).fetchall()
 
 
@@ -2122,7 +2130,7 @@ def api_ot_repuestos():
 @app.post("/api/admin/repuestos")
 @requiere_admin
 def api_admin_repuestos():
-    """Agrega un repuesto ({descripcion, sistema, valor, codigo, stock}) o edita uno existente ({id, ...campos, activo})."""
+    """Agrega un repuesto ({codigo, descripcion, sistemas: [...], valor, stock, stock_seguridad}) o edita uno existente ({id, ...campos, activo})."""
     d = request.get_json(silent=True) or {}
     u = usuario_actual()
     with conectar() as cx:
@@ -2135,42 +2143,42 @@ def api_admin_repuestos():
                 nuevo["descripcion"] = (d.get("descripcion") or "").strip()[:200]
             if "codigo" in d:
                 nuevo["codigo"] = (d.get("codigo") or "").strip().upper()[:60]
-            if "sistema" in d:
-                nuevo["sistema"] = d.get("sistema")
+            if "sistemas" in d:
+                nuevo["sistemas"] = _lista_sistemas(d.get("sistemas"))
             if "valor" in d:
                 nuevo["valor"] = _entero(d.get("valor"))
             if "stock_seguridad" in d:
                 nuevo["stock_seguridad"] = _entero(d.get("stock_seguridad") if str(d.get("stock_seguridad") or "").strip() else 0)
             if "activo" in d:
                 nuevo["activo"] = bool(d["activo"])
-            if not nuevo["codigo"] or not nuevo["descripcion"] or nuevo["sistema"] not in _sistemas() or nuevo["valor"] is None or nuevo["stock_seguridad"] is None:
-                return jsonify(error="Revisa el código, la descripción, el sistema, el valor y el stock de seguridad (enteros)."), 400
+            if not nuevo["codigo"] or not nuevo["descripcion"] or not nuevo["sistemas"] or nuevo["valor"] is None or nuevo["stock_seguridad"] is None:
+                return jsonify(error="Revisa el código, la descripción, los sistemas (al menos uno), el valor y el stock de seguridad (enteros)."), 400
             if _repetido(cx, nuevo, r["id"]):
                 return jsonify(error="Ya existe un repuesto con ese código o esa descripción."), 409
-            cx.execute("UPDATE repuestos SET descripcion=%s, codigo=%s, sistema=%s, valor=%s, stock_seguridad=%s, activo=%s WHERE id=%s",
-                       (nuevo["descripcion"], nuevo["codigo"], nuevo["sistema"], nuevo["valor"], nuevo["stock_seguridad"], nuevo["activo"], r["id"]))
-            nombres = {"descripcion": "Descripción", "codigo": "Código", "sistema": "Sistema", "valor": "Valor (CLP)",
+            cx.execute("UPDATE repuestos SET descripcion=%s, codigo=%s, sistemas=%s, valor=%s, stock_seguridad=%s, activo=%s WHERE id=%s",
+                       (nuevo["descripcion"], nuevo["codigo"], nuevo["sistemas"], nuevo["valor"], nuevo["stock_seguridad"], nuevo["activo"], r["id"]))
+            nombres = {"descripcion": "Descripción", "codigo": "Código", "sistemas": "Sistemas", "valor": "Valor (CLP)",
                        "stock_seguridad": "Stock de seguridad", "activo": "Estado"}
-            ver = lambda k, v: ("Activo" if v else "Inactivo") if k == "activo" else (clp(v) if k == "valor" else str(v))
+            ver = lambda k, v: ("Activo" if v else "Inactivo") if k == "activo" else (clp(v) if k == "valor" else (", ".join(v) if k == "sistemas" else str(v)))
             filas = [dict(accion="Repuesto modificado" if k != "activo" else ("Repuesto activado" if nuevo[k] else "Repuesto desactivado"),
                           origen="Administración", objeto=nuevo["descripcion"], campo=nombres[k], antes=ver(k, r[k]), despues=ver(k, nuevo[k]))
                      for k in nombres if nuevo[k] != r[k]]
             registrar_varias(cx, filas, u)
             return jsonify(ok=True)
         nuevo = {"descripcion": (d.get("descripcion") or "").strip()[:200], "codigo": (d.get("codigo") or "").strip().upper()[:60],
-                 "sistema": d.get("sistema"), "valor": _entero(d.get("valor")),
+                 "sistemas": _lista_sistemas(d.get("sistemas")), "valor": _entero(d.get("valor")),
                  "stock_seguridad": _entero(d.get("stock_seguridad") if str(d.get("stock_seguridad") or "").strip() else 0)}
         stock = _entero(d.get("stock") if str(d.get("stock") or "").strip() else 0)
-        if not nuevo["codigo"] or not nuevo["descripcion"] or nuevo["sistema"] not in _sistemas() or nuevo["valor"] is None or stock is None or nuevo["stock_seguridad"] is None:
-            return jsonify(error="Completa código, descripción, sistema, valor (entero en pesos), stock inicial y stock de seguridad (enteros, 0 o más)."), 400
+        if not nuevo["codigo"] or not nuevo["descripcion"] or not nuevo["sistemas"] or nuevo["valor"] is None or stock is None or nuevo["stock_seguridad"] is None:
+            return jsonify(error="Completa código, descripción, sistemas (al menos uno), valor (entero en pesos), stock inicial y stock de seguridad (enteros, 0 o más)."), 400
         if _repetido(cx, nuevo):
             return jsonify(error="Ya existe un repuesto con ese código o esa descripción."), 409
-        rid = cx.execute("""INSERT INTO repuestos (descripcion, codigo, sistema, valor, stock_seguridad)
-                            VALUES (%(descripcion)s,%(codigo)s,%(sistema)s,%(valor)s,%(stock_seguridad)s) RETURNING id""",
+        rid = cx.execute("""INSERT INTO repuestos (descripcion, codigo, sistemas, valor, stock_seguridad)
+                            VALUES (%(descripcion)s,%(codigo)s,%(sistemas)s,%(valor)s,%(stock_seguridad)s) RETURNING id""",
                          nuevo).fetchone()["id"]
         n = ahora()
         registrar(cx, "Repuesto agregado a la nómina", "Administración", u, ts=n, objeto=nuevo["descripcion"],
-                  detalle=f"Código {nuevo['codigo']}, {nuevo['sistema']}, {clp(nuevo['valor'])}, stock de seguridad {nuevo['stock_seguridad']}")
+                  detalle=f"Código {nuevo['codigo']}, {', '.join(nuevo['sistemas'])}, {clp(nuevo['valor'])}, stock de seguridad {nuevo['stock_seguridad']}")
         if stock:
             _mover_stock(cx, u, n, rid, nuevo["descripcion"], "ingreso", stock, 0, "Stock inicial")
     return jsonify(ok=True)
@@ -2216,7 +2224,7 @@ def api_admin_stock():
     return jsonify(ok=True)
 
 
-COLUMNAS_REPUESTOS = ["Código", "Descripción", "Sistema", "Valor (CLP)", "Stock en bodega", "Stock de seguridad", "Alerta",
+COLUMNAS_REPUESTOS = ["Código", "Descripción", "Sistemas", "Valor (CLP)", "Stock en bodega", "Stock de seguridad", "Alerta",
                       "Valor en bodega (CLP)", "Estado"]
 
 
@@ -2225,7 +2233,7 @@ def alerta_stock(r):
     if r["stock"] <= 0:
         return "Quiebre"
     return "Bajo stock de seguridad" if r["stock"] <= r["stock_seguridad"] else ""
-COLUMNAS_OT = ["Interno", "N° de OT", "Estado OT", "En mantenimiento desde", "Motivo", "Código", "Repuesto", "Sistema",
+COLUMNAS_OT = ["Interno", "N° de OT", "Estado OT", "En mantenimiento desde", "Motivo", "Código", "Repuesto", "Sistemas",
                "Cantidad", "Costo (CLP)", "Total OT (CLP)"]
 COLUMNAS_MOV = ["Fecha y hora", "Usuario", "Movimiento", "Código", "Repuesto", "Cantidad (+ entra / − sale)",
                 "Interno", "N° de OT", "Valor unitario (CLP)"]
@@ -2238,7 +2246,7 @@ NOMBRE_MOV = {"ingreso": "Ingreso a bodega", "ajuste": "Ajuste de inventario", "
 @sin_listado_para_invitado
 def api_repuestos_descarga(fmt):
     with conectar() as cx:
-        filas = [[r["codigo"], r["descripcion"], r["sistema"], r["valor"], r["stock"], r["stock_seguridad"],
+        filas = [[r["codigo"], r["descripcion"], ", ".join(r["sistemas"]), r["valor"], r["stock"], r["stock_seguridad"],
                   alerta_stock(r) if r["activo"] else "", r["valor"] * r["stock"],
                   "Activo" if r["activo"] else "Inactivo"] for r in lista_repuestos(cx)]
         registrar_descarga(cx, "Nómina de repuestos", fmt)

@@ -23,7 +23,14 @@ tr.quiebre td{background:var(--mt-bg)} tr.minimo td{background:var(--warn-bg)}
 td .row{gap:6px;align-items:center;flex-wrap:nowrap}
 td input[type=number]{width:90px}
 .asignar{display:flex;flex-wrap:wrap;gap:6px;align-items:center}
-.asignar select{flex:1 1 180px;min-width:0}
+.asignar select{flex:1 1 160px;min-width:0}
+details.multi{position:relative;min-width:180px}
+details.multi summary{list-style:none;cursor:pointer;font:500 .88rem var(--f-display);color:var(--fg);background:var(--surface2);border:1px solid var(--line);border-radius:7px;padding:6px 26px 6px 8px;max-width:260px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+details.multi summary::after{content:"▾";position:absolute;right:9px;top:6px;color:var(--muted)}
+details.multi .op{position:absolute;z-index:5;top:100%;left:0;margin-top:4px;background:var(--surface);border:1px solid var(--line);border-radius:8px;padding:6px 10px;display:grid;gap:2px;min-width:240px;max-height:300px;overflow:auto;box-shadow:0 6px 18px rgb(0 0 0 / .15)}
+details.multi label{display:flex;gap:6px;align-items:center;font-size:.86rem;color:var(--fg);font-weight:500;white-space:nowrap}
+td details.multi .op{position:static;box-shadow:none}
+div.f{display:flex;flex-direction:column;gap:4px;font-size:.8rem;color:var(--muted);font-weight:600}
 .asignar input{width:70px}
 @media (max-width:420px){.ots{grid-template-columns:1fr}}
 </style>
@@ -67,7 +74,7 @@ td input[type=number]{width:90px}
     <form class="row" id="f-r" hidden style="margin-bottom:12px">
       <label class="f">Código<input id="r-codigo" required maxlength="60" style="width:120px"></label>
       <label class="f">Descripción<input id="r-descripcion" required maxlength="200"></label>
-      <label class="f">Sistema<select id="r-sistema" required></select></label>
+      <div class="f">Sistemas (uno o varios)<details class="multi" id="r-sistemas"></details></div>
       <label class="f">Valor (CLP)<input id="r-valor" type="number" min="0" step="1" required style="width:120px"></label>
       <label class="f">Stock inicial<input id="r-stock" type="number" min="0" step="1" value="0" style="width:90px"></label>
       <label class="f">Stock de seguridad<input id="r-stock_seguridad" type="number" min="0" step="1" value="0" style="width:90px"></label>
@@ -91,14 +98,22 @@ async function hacer(url, body, okMsg) { try { await api(url, body); aviso(okMsg
 const escribe = () => yo && yo.rol !== "invitado";
 const admin = () => yo && yo.rol === "admin";
 
-function opcionesRep(sistema) {
-  const act = D.repuestos.filter(r => r.activo);
-  const grupos = {};
-  act.forEach(r => (grupos[r.sistema] = grupos[r.sistema] || []).push(r));
-  const orden = Object.keys(grupos).sort((a, b) => (b === sistema) - (a === sistema) || D.sistemas.indexOf(a) - D.sistemas.indexOf(b));
-  return `<option value="">Elegir repuesto…</option>` + orden.map(s => `<optgroup label="${esc(s)}">${grupos[s].map(r =>
-    `<option value="${r.id}" ${r.stock <= 0 ? "disabled" : ""}>${esc(r.codigo)} · ${esc(r.descripcion)} · ${clp(r.valor)} · bodega ${r.stock}</option>`).join("")}</optgroup>`).join("");
+// Dos listas en cada OT: primero el sistema del bus, luego solo los repuestos de ese sistema.
+const sistemasConRep = () => D.sistemas.filter(s => D.repuestos.some(r => r.activo && r.sistemas.includes(s)));
+function opcionesSistema(def) {
+  const ss = sistemasConRep(), sel = ss.includes(def) ? def : "";
+  return `<option value="">Sistema…</option>` + ss.map(s => `<option ${s === sel ? "selected" : ""}>${esc(s)}</option>`).join("");
 }
+function opcionesRep(sistema) {
+  if (!sistema) return `<option value="">Primero elige el sistema</option>`;
+  return `<option value="">Repuesto…</option>` + D.repuestos.filter(r => r.activo && r.sistemas.includes(sistema)).map(r =>
+    `<option value="${r.id}" ${r.stock <= 0 ? "disabled" : ""}>${esc(r.codigo)} · ${esc(r.descripcion)} · ${clp(r.valor)} · bodega ${r.stock}${r.stock <= 0 ? " (quiebre)" : ""}</option>`).join("");
+}
+function multiSistemas(sel, attrs) {
+  return `<summary>${sel.length ? esc(sel.join(", ")) : "Elegir…"}</summary><div class="op">${D.sistemas.map(x =>
+    `<label><input type="checkbox" value="${esc(x)}" ${sel.includes(x) ? "checked" : ""} ${attrs}>${esc(x)}</label>`).join("")}</div>`;
+}
+const elegidos = el => [...el.querySelectorAll("input:checked")].map(x => x.value);
 function tarjeta(o) {
   const filas = o.lineas.map(l => `<tr><td><span class="mono">${esc(l.codigo)}</span> ${esc(l.descripcion)}<br><small class="muted">${esc(l.sistema)}</small></td>
     <td class="num">${l.cantidad}</td><td class="num">${clp(l.costo)}</td>
@@ -108,19 +123,19 @@ function tarjeta(o) {
     <div class="note">${o.activa ? `${esc(o.motivo || "Sin motivo")}${o.observacion ? " · " + esc(o.observacion) : ""} · ${esc(o.terminal)} · desde ${esc(o.desde)}` : `Cerrada · último movimiento ${esc(o.ultimo)}`}</div>
     ${o.lineas.length ? `<table><thead><tr><th>Repuesto</th><th class="num">Cant.</th><th class="num">Costo</th>${escribe() ? "<th></th>" : ""}</tr></thead><tbody>${filas}</tbody></table>` : `<p class="note">Sin repuestos asignados.</p>`}
     <div class="row" style="justify-content:space-between"><span class="muted">Total OT</span><span class="total">${clp(o.total)}</span></div>
-    ${o.activa && escribe() ? `<div class="asignar"><select data-sel>${opcionesRep(o.sistema)}</select><input type="number" min="1" step="1" value="1" data-cant aria-label="Cantidad">
+    ${o.activa && escribe() ? `<div class="asignar"><select data-sis aria-label="Sistema">${opcionesSistema(o.sistema)}</select><select data-sel aria-label="Repuesto">${opcionesRep(sistemasConRep().includes(o.sistema) ? o.sistema : "")}</select><input type="number" min="1" step="1" value="1" data-cant aria-label="Cantidad">
       <button class="btn" data-asignar data-i="${esc(o.interno)}" data-ot="${esc(o.ot)}">Asignar</button></div>` : ""}
   </article>`;
 }
 function pintarNomina() {
   const q = $("r-buscar").value.trim().toLowerCase(), s = $("r-filtro").value;
   const sa = $("r-solo-alerta").checked;
-  const reps = D.repuestos.filter(r => (!sa || r.alerta) && (!s || r.sistema === s) && (!q || (r.codigo + " " + r.descripcion).toLowerCase().includes(q)));
+  const reps = D.repuestos.filter(r => (!sa || r.alerta) && (!s || r.sistemas.includes(s)) && (!q || (r.codigo + " " + r.descripcion).toLowerCase().includes(q)));
   $("h-r").innerHTML = `<tr><th>Código</th><th>Descripción</th><th>Sistema</th><th class="num">Valor</th><th class="num">Bodega</th><th class="num">Seguridad</th><th>Alerta</th>${admin() ? "<th>Editar</th><th>Stock</th><th>Estado</th>" : ""}</tr>`;
   $("t-r").innerHTML = reps.map(r => `<tr class="${r.activo ? "" : "off"} ${r.alerta === "Quiebre" ? "quiebre" : r.alerta ? "minimo" : ""}">
     <td class="mono">${admin() ? `<input data-f="codigo" data-id="${r.id}" value="${esc(r.codigo)}" maxlength="60" style="width:110px">` : esc(r.codigo)}</td>
     <td>${admin() ? `<input data-f="descripcion" data-id="${r.id}" value="${esc(r.descripcion)}" maxlength="200">` : esc(r.descripcion)}</td>
-    <td>${admin() ? `<select data-f="sistema" data-id="${r.id}">${D.sistemas.map(x => `<option ${x === r.sistema ? "selected" : ""}>${esc(x)}</option>`).join("")}</select>` : esc(r.sistema)}</td>
+    <td>${admin() ? `<details class="multi" data-sis-id="${r.id}">${multiSistemas(r.sistemas, "")}</details>` : esc(r.sistemas.join(", "))}</td>
     <td class="num">${admin() ? `<input type="number" min="0" step="1" data-f="valor" data-id="${r.id}" value="${r.valor}" style="width:110px">` : clp(r.valor)}</td>
     <td class="num ${r.alerta ? "bajo" : ""}">${r.stock}</td>
     <td class="num">${admin() ? `<input type="number" min="0" step="1" data-f="stock_seguridad" data-id="${r.id}" value="${r.stock_seguridad}" style="width:80px">` : r.stock_seguridad}</td>
@@ -143,8 +158,8 @@ async function cargar() {
     + (al.length > 8 ? ` · y ${al.length - 8} más (ver Nómina de repuestos)` : "") : "";
   $("l-activas").innerHTML = D.activas.map(tarjeta).join("") || `<p class="note">No hay buses en Mantenimiento con N° de OT.</p>`;
   $("l-cerradas").innerHTML = D.cerradas.map(tarjeta).join("") || `<p class="note">Aún no hay OT cerradas con repuestos.</p>`;
-  if (!$("r-sistema").options.length) {
-    $("r-sistema").innerHTML = D.sistemas.map(s => `<option>${esc(s)}</option>`).join("");
+  if (!$("r-sistemas").innerHTML) {
+    $("r-sistemas").innerHTML = multiSistemas([], "");
     $("r-filtro").innerHTML += D.sistemas.map(s => `<option>${esc(s)}</option>`).join("");
   }
   pintarNomina();
@@ -153,6 +168,12 @@ document.querySelectorAll("[data-tab]").forEach(b => b.onclick = () => {
   document.querySelectorAll("[data-tab]").forEach(x => { x.setAttribute("aria-selected", x === b); $("p-" + x.dataset.tab).hidden = x !== b; });
   guardarPref("ot-tab", b.dataset.tab);
 });
+document.addEventListener("change", e => {
+  if (e.target.matches("[data-sis]")) e.target.closest(".asignar").querySelector("[data-sel]").innerHTML = opcionesRep(e.target.value);
+  const d = e.target.closest("details.multi");
+  if (d) d.querySelector("summary").textContent = elegidos(d).join(", ") || "Elegir…";
+});
+document.addEventListener("click", e => { document.querySelectorAll("details.multi[open]").forEach(d => { if (!d.contains(e.target)) d.open = false; }); });
 $("r-buscar").oninput = pintarNomina; $("r-filtro").onchange = pintarNomina; $("r-solo-alerta").onchange = pintarNomina;
 document.addEventListener("click", e => {
   const t = e.target.closest("button"); if (!t) return;
@@ -171,6 +192,7 @@ document.addEventListener("click", e => {
   if (t.dataset.guardar) {
     const b = {id: +t.dataset.guardar};
     document.querySelectorAll(`[data-f][data-id="${t.dataset.guardar}"]`).forEach(x => b[x.dataset.f] = x.value);
+    b.sistemas = elegidos(document.querySelector(`[data-sis-id="${t.dataset.guardar}"]`));
     hacer("/api/admin/repuestos", b, "Repuesto actualizado.");
   }
   if (t.dataset.act) hacer("/api/admin/repuestos", {id: +t.dataset.act, activo: t.dataset.v === "1"}, "Repuesto actualizado.");
@@ -178,8 +200,9 @@ document.addEventListener("click", e => {
   if (t.dataset.conteo) hacer("/api/admin/repuestos/stock", {id: +t.dataset.conteo, conteo: document.querySelector(`[data-con="${t.dataset.conteo}"]`).value}, "Stock ajustado al conteo.");
 });
 $("f-r").addEventListener("submit", async e => { e.preventDefault();
-  const b = {}; ["codigo", "descripcion", "sistema", "valor", "stock", "stock_seguridad"].forEach(k => b[k] = $("r-" + k).value);
-  if (await hacer("/api/admin/repuestos", b, "Repuesto agregado.")) { e.target.reset(); $("r-stock").value = 0; $("r-stock_seguridad").value = 0; } });
+  const b = {sistemas: elegidos($("r-sistemas"))}; ["codigo", "descripcion", "valor", "stock", "stock_seguridad"].forEach(k => b[k] = $("r-" + k).value);
+  if (!b.sistemas.length) return aviso("Elige al menos un sistema para el repuesto.");
+  if (await hacer("/api/admin/repuestos", b, "Repuesto agregado.")) { e.target.reset(); $("r-stock").value = 0; $("r-stock_seguridad").value = 0; $("r-sistemas").innerHTML = multiSistemas([], ""); } });
 (async () => {
   yo = await barra("/ot");
   $("f-r").hidden = !admin();
