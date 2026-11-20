@@ -15,7 +15,7 @@ const diaSemana = iso => DIAS[new Date(iso + "T12:00:00").getDay()];
 
 async function barra(actual) {
   const yo = await api("/api/yo");
-  const links = [["/", "Reporte diario"], ["/dashboard", "Dashboard y descarga"], ["/tableros", "Tableros"], ["/reiterativos", "Reiterativos"]];
+  const links = [["/", "Reporte diario"], ["/dashboard", "Dashboard y descarga"], ["/tableros", "Tableros"], ["/reiterativos", "Reiterativos"], ["/ot", "OT y repuestos"]];
   if (yo.rol === "admin") links.push(["/admin", "Usuarios, motivos y buses"]);
   const el = document.createElement("header");
   el.className = "top";
